@@ -348,7 +348,7 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        folder: { type: "string", description: "Scope to a folder, e.g. 'Assets/1Curio'." },
+        folder: { type: "string", description: "Scope to a folder, e.g. 'Assets/Art'." },
         type: { type: "string", description: "Asset type filter, e.g. 'Material', 'Texture2D'." },
         term: { type: "string", description: "Name filter." },
         limit: { type: "number", description: "Max results (default 200)." },
@@ -362,7 +362,7 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        path: { type: "string", description: "Project-relative path, e.g. 'Assets/1Curio/Scripts/Foo.cs'." },
+        path: { type: "string", description: "Project-relative path, e.g. 'Assets/Scripts/Foo.cs'." },
         maxChars: { type: "number", description: "Max characters (default 60000)." },
       },
       required: ["path"],

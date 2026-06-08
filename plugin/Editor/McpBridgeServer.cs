@@ -20,11 +20,11 @@ namespace Adanub.UnityMcp.Editor
     /// (pumped from <see cref="EditorApplication.update"/>) and the request thread blocks
     /// until it completes or times out.
     ///
-    /// The server survives domain reloads (recompile, play-mode entry): it stops before a
-    /// reload and a SessionState flag triggers a restart on the next load.
+    /// The server survives domain reloads (recompile, play-mode entry): it stops before a reload
+    /// (beforeAssemblyReload) and the [InitializeOnLoad] static ctor restarts it on the next load.
     ///
-    /// A1 scope: fixed port, single instance, ping route only. Multi-instance discovery and
-    /// dynamic port selection arrive in a later step.
+    /// Binds the first free port in 7890-7899, so several editors (e.g. game client + server) can
+    /// each run a bridge; the Node shim discovers them and routes per-call by port.
     /// </summary>
     [InitializeOnLoad]
     public static class McpBridgeServer
@@ -44,8 +44,9 @@ namespace Adanub.UnityMcp.Editor
         // How long a request thread waits for the main thread to service it.
         private const int MainThreadTimeoutMs = 30_000;
 
-        // Persists "was running" across the domain reload so we restart automatically.
-        private const string WasRunningKey = "Adanub_UnityMcp_WasRunning";
+        // Captured on the main thread (the static ctor runs there) so RunOnMainThread can detect the
+        // main thread without assuming it is managed-thread-id 1.
+        private static int _mainThreadId;
 
         public static bool IsRunning => _isRunning;
         public static int ActivePort => _isRunning ? _activePort : 0;
@@ -55,13 +56,15 @@ namespace Adanub.UnityMcp.Editor
             // Batch-mode subprocesses (asset import workers, CLI builds) must not claim the port.
             if (Application.isBatchMode) return;
 
+            _mainThreadId = Thread.CurrentThread.ManagedThreadId;
+
             EditorApplication.update += OnEditorUpdate;
             EditorApplication.quitting += Stop;
             AssemblyReloadEvents.beforeAssemblyReload += OnBeforeAssemblyReload;
 
-            // Auto-start on load, and also restart if we were running before a reload.
+            // The static ctor runs on every domain load (including after a reload), so this
+            // unconditionally (re)starts the bridge; beforeAssemblyReload stops it first.
             Start();
-            SessionState.SetBool(WasRunningKey, false);
         }
 
         public static void Start()
@@ -128,26 +131,12 @@ namespace Adanub.UnityMcp.Editor
 
         private static void OnBeforeAssemblyReload()
         {
-            if (_isRunning)
-            {
-                SessionState.SetBool(WasRunningKey, true);
-                Stop();
-            }
+            if (_isRunning) Stop();
         }
 
         // ─── Main-thread pump ───
 
-        private static void OnEditorUpdate()
-        {
-            // Restart after a domain reload if we were running before it.
-            if (!_isRunning && SessionState.GetBool(WasRunningKey, false))
-            {
-                Start();
-                SessionState.SetBool(WasRunningKey, false);
-            }
-
-            ProcessMainThreadQueue();
-        }
+        private static void OnEditorUpdate() => ProcessMainThreadQueue();
 
         private static void ProcessMainThreadQueue()
         {
@@ -165,32 +154,41 @@ namespace Adanub.UnityMcp.Editor
             }
         }
 
+        private sealed class CancelToken { public volatile bool Cancelled; }
+
         private static object RunOnMainThread(Func<object> work)
         {
-            if (Thread.CurrentThread.ManagedThreadId == 1)
+            if (Thread.CurrentThread.ManagedThreadId == _mainThreadId)
                 return work();
 
             object result = null;
             Exception error = null;
-            using (var done = new ManualResetEventSlim(false))
-            {
-                lock (_mainThreadQueue)
-                {
-                    _mainThreadQueue.Enqueue(() =>
-                    {
-                        try { result = work(); }
-                        catch (Exception ex) { error = ex; }
-                        finally { done.Set(); }
-                    });
-                }
+            // Deliberately NOT in a `using`: on timeout the request returns, but the queued action
+            // may still run later. Disposing the event here would make that late Set() throw. The
+            // cancel token makes the late action skip both the work and the Set; `done` is then GC'd.
+            var done = new ManualResetEventSlim(false);
+            var token = new CancelToken();
 
-                if (!done.Wait(MainThreadTimeoutMs))
-                    return new { error = $"Timed out after {MainThreadTimeoutMs / 1000}s waiting for the Unity main thread." };
+            lock (_mainThreadQueue)
+            {
+                _mainThreadQueue.Enqueue(() =>
+                {
+                    if (token.Cancelled) return;
+                    try { result = work(); }
+                    catch (Exception ex) { error = ex; }
+                    finally { if (!token.Cancelled) done.Set(); }
+                });
             }
 
+            if (!done.Wait(MainThreadTimeoutMs))
+            {
+                token.Cancelled = true;
+                return new { error = $"Timed out after {MainThreadTimeoutMs / 1000}s waiting for the Unity main thread." };
+            }
+
+            done.Dispose();
             if (error != null)
                 return new { error = error.Message, stackTrace = error.StackTrace };
-
             return result;
         }
 

@@ -23,6 +23,9 @@ export async function callBridge(route, body = {}, port) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body ?? {}),
+      // Backstop for a frozen editor process (the bridge has its own 30s main-thread timeout, which
+      // normally returns first; this only fires if the HTTP layer itself hangs).
+      signal: AbortSignal.timeout(35000),
     });
   } catch (err) {
     throw new Error(

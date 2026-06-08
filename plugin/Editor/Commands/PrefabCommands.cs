@@ -151,7 +151,7 @@ namespace Adanub.UnityMcp.Editor.Commands
                 { "path", path },
                 { "prefabPath", internalPath ?? "" },
                 { "component", comp.GetType().Name },
-                { "properties", InspectionUtil.SerializeComponent(comp) },
+                { "properties", InspectionUtil.SerialiseComponent(comp) },
             };
         }
 
@@ -213,12 +213,12 @@ namespace Adanub.UnityMcp.Editor.Commands
             try
             {
                 var pm = PrefabUtility.GetPropertyModifications(root);
-                if (pm != null)
+                if (pm is not null)
                 {
                     foreach (var m in pm)
                     {
                         if (mods.Count >= limit) break;
-                        if (m == null) continue;
+                        if (m is null) continue;
                         mods.Add(new Dictionary<string, object>
                         {
                             { "target", m.target != null ? m.target.GetType().Name : null },

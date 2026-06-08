@@ -27,7 +27,7 @@ namespace Adanub.UnityMcp.Editor.Commands
                 { "activeScene", scene.name },
                 { "activeScenePath", scene.path },
                 { "activeSceneDirty", scene.isDirty },
-                { "selectionCount", Selection.objects != null ? Selection.objects.Length : 0 },
+                { "selectionCount", Selection.objects is not null ? Selection.objects.Length : 0 },
             };
         }
 

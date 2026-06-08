@@ -43,7 +43,7 @@ namespace Adanub.UnityMcp.Editor.Commands
             {
                 { "gameObject", InspectionUtil.GetPath(go.transform) },
                 { "component", target.GetType().Name },
-                { "properties", InspectionUtil.SerializeComponent(target) },
+                { "properties", InspectionUtil.SerialiseComponent(target) },
             };
         }
 
@@ -55,7 +55,7 @@ namespace Adanub.UnityMcp.Editor.Commands
             int limit = args.Value<int?>("limit") ?? 100;
 
             Type type = InspectionUtil.FindType(typeName);
-            if (type == null) return new { error = $"Type '{typeName}' could not be resolved." };
+            if (type is null) return new { error = $"Type '{typeName}' could not be resolved." };
 
             // Scene objects: GameObjects (if asking for GameObject) or holders of a component type.
             var sceneObjects = new List<object>();

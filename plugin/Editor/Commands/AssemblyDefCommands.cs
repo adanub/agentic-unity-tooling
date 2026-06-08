@@ -55,7 +55,7 @@ namespace Adanub.UnityMcp.Editor.Commands
                     break;
                 }
             }
-            if (target == null) return new { error = "Assembly definition not found (predefined assemblies have no asmdef)." };
+            if (target is null) return new { error = "Assembly definition not found (predefined assemblies have no asmdef)." };
 
             return new Dictionary<string, object>
             {

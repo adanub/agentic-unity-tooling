@@ -103,7 +103,7 @@ namespace Adanub.UnityMcp.Editor.Commands
                 HierarchyFrameDataView.ViewModes.MergeSamplesWithTheSameName,
                 HierarchyFrameDataView.columnTotalTime, false))
             {
-                if (view == null || !view.valid)
+                if (view is null || !view.valid)
                     return new { error = $"No valid frame data for frame {frameIndex}, thread {threadIndex}." };
 
                 var items = new List<Dictionary<string, object>>();
@@ -186,7 +186,7 @@ namespace Adanub.UnityMcp.Editor.Commands
                         HierarchyFrameDataView.ViewModes.MergeSamplesWithTheSameName,
                         HierarchyFrameDataView.columnSelfTime, false))
                     {
-                        if (view != null && view.valid)
+                        if (view is not null && view.valid)
                         {
                             var hotspots = new List<Dictionary<string, object>>();
                             var children = new List<int>();

@@ -59,7 +59,7 @@ namespace Adanub.UnityMcp.Editor.Commands
             var objects = new List<Object>();
 
             var paths = args["paths"] as JArray;
-            if (paths != null)
+            if (paths is not null)
                 foreach (var p in paths)
                 {
                     var go = InspectionUtil.FindByPath(p.ToString());
@@ -67,7 +67,7 @@ namespace Adanub.UnityMcp.Editor.Commands
                 }
 
             var ids = args["instanceIds"] as JArray;
-            if (ids != null)
+            if (ids is not null)
                 foreach (var id in ids)
                 {
                     var obj = InspectionUtil.FindByInstanceId(id.Value<int>());

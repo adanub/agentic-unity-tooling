@@ -81,7 +81,7 @@ namespace Adanub.UnityMcp.Editor.Commands
                 {
                     if (budget.Remaining <= 0) { budget.Truncated = true; break; }
                     var child = t.GetChild(i);
-                    if (!includeInactive && !child.gameObject.activeSelf) continue;
+                    if (!includeInactive && !child.gameObject.activeInHierarchy) continue;
                     children.Add(BuildNode(child, depth + 1, maxDepth, includeComponents, includeInactive, budget));
                 }
                 if (children.Count > 0) node["children"] = children;

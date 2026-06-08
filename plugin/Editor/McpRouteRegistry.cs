@@ -30,12 +30,12 @@ namespace Adanub.UnityMcp.Editor
             }
         }
 
+        // Reflection scan results are immutable for the assembly's lifetime, so the built map is
+        // cached. A domain reload (recompile / play-mode entry) resets this to null with the
+        // assembly and the lazy getter rebuilds — no explicit reset hook needed. (A
+        // RuntimeInitializeOnLoadMethod reset would be wrong here: in this editor-only assembly it
+        // fires on play-mode entry and, under Disable Domain Reload, would null a still-valid cache.)
         private static Dictionary<string, RouteEntry> _routes;
-
-        // Reflection scan results are immutable for the lifetime of the loaded assembly,
-        // so the built map is safe to cache. Rebuilt only after a domain reload (new statics).
-        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
-        private static void ResetStatics() => _routes = null;
 
         private static Dictionary<string, RouteEntry> Routes
         {

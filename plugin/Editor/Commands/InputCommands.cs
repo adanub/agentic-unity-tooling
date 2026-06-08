@@ -33,7 +33,7 @@ namespace Adanub.UnityMcp.Editor.Commands
                     var actions = m["actions"] as JArray;
                     var bindings = m["bindings"] as JArray;
                     var actionList = new List<object>();
-                    if (actions != null)
+                    if (actions is not null)
                         foreach (var a in actions)
                             actionList.Add(new Dictionary<string, object>
                             {

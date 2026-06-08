@@ -24,7 +24,7 @@ namespace Adanub.UnityMcp.Editor.Commands
                 if (!string.IsNullOrEmpty(term))
                 {
                     bool match = p.name.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0
-                        || (p.displayName != null && p.displayName.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0);
+                        || (p.displayName is not null && p.displayName.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0);
                     if (!match) continue;
                 }
                 result.Add(new Dictionary<string, object>
@@ -45,7 +45,7 @@ namespace Adanub.UnityMcp.Editor.Commands
             if (string.IsNullOrEmpty(name)) return new { error = "Missing 'name'." };
 
             var p = PackageInfo.GetAllRegisteredPackages().FirstOrDefault(x => x.name == name);
-            if (p == null) return new { error = $"Package '{name}' not found among registered packages." };
+            if (p is null) return new { error = $"Package '{name}' not found among registered packages." };
 
             return new Dictionary<string, object>
             {

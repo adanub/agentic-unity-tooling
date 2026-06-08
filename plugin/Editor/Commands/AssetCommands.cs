@@ -8,7 +8,7 @@ namespace Adanub.UnityMcp.Editor.Commands
     /// <summary>Project asset listing and C# script reading (read-only).</summary>
     public static class AssetCommands
     {
-        [McpRoute("asset/list", "List project assets. Args: folder (e.g. 'Assets/1Curio'), type (e.g. 'Material'), term (name filter), limit (200).")]
+        [McpRoute("asset/list", "List project assets. Args: folder (e.g. 'Assets/Art'), type (e.g. 'Material'), term (name filter), limit (200).")]
         public static object List(JObject args)
         {
             string folder = args.Value<string>("folder");

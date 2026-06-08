@@ -10,10 +10,19 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import crypto from "node:crypto";
 
 import { pingPort, PORT_RANGE_START, PORT_RANGE_END } from "./bridge.js";
 
-const STATE_FILE = path.join(os.tmpdir(), "adanub-unity-mcp-selection.json");
+// Per-project selection file: the MCP server is launched once per project (Claude Code sets
+// CLAUDE_PROJECT_DIR in the server's env), so key the state by it — two projects' shims then never
+// clobber each other's instance selection.
+const PROJECT_KEY = crypto
+  .createHash("sha1")
+  .update(process.env.CLAUDE_PROJECT_DIR || process.cwd())
+  .digest("hex")
+  .slice(0, 12);
+const STATE_FILE = path.join(os.tmpdir(), `adanub-unity-mcp-selection-${PROJECT_KEY}.json`);
 
 let _selection = undefined; // { port, projectPath } | null | undefined(=not loaded)
 

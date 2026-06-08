@@ -42,7 +42,7 @@ namespace Adanub.UnityMcp.Editor.Commands
             foreach (var go in UnityEngine.Object.FindObjectsByType<GameObject>(FindObjectsInactive.Include, FindObjectsSortMode.None))
             {
                 if (results.Count >= limit) break;
-                bool match = re != null ? re.IsMatch(go.name)
+                bool match = re is not null ? re.IsMatch(go.name)
                                         : go.name.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0;
                 if (match) results.Add(GoResult(go));
             }

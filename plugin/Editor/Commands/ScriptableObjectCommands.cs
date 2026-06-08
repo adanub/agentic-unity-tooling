@@ -22,7 +22,7 @@ namespace Adanub.UnityMcp.Editor.Commands
             {
                 { "path", path },
                 { "type", so.GetType().Name },
-                { "properties", InspectionUtil.SerializeUnityObject(so) },
+                { "properties", InspectionUtil.SerialiseUnityObject(so) },
             };
         }
 

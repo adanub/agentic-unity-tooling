@@ -70,13 +70,13 @@ namespace Adanub.UnityMcp.Editor.Commands
                     ?? Type.GetType("UnityEditor.LogEntries,UnityEditor.CoreModule");
                 _logEntryType = Type.GetType("UnityEditor.LogEntry,UnityEditor")
                     ?? Type.GetType("UnityEditor.LogEntry,UnityEditor.CoreModule");
-                if (_logEntriesType == null) missing.Add("type UnityEditor.LogEntries");
-                if (_logEntryType == null) missing.Add("type UnityEditor.LogEntry");
+                if (_logEntriesType is null) missing.Add("type UnityEditor.LogEntries");
+                if (_logEntryType is null) missing.Add("type UnityEditor.LogEntry");
 
                 const BindingFlags S = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;
                 const BindingFlags I = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
 
-                if (_logEntriesType != null)
+                if (_logEntriesType is not null)
                 {
                     _startGettingEntries = _logEntriesType.GetMethod("StartGettingEntries", S);
                     _endGettingEntries = _logEntriesType.GetMethod("EndGettingEntries", S);
@@ -85,17 +85,17 @@ namespace Adanub.UnityMcp.Editor.Commands
                     _getEntryCount = _logEntriesType.GetMethod("GetEntryCount", S); // optional: per-row repeat (collapse) count
                     _clearMethod = _logEntriesType.GetMethod("Clear", S);           // used by console/clear only
 
-                    if (_startGettingEntries == null) missing.Add("LogEntries.StartGettingEntries()");
-                    if (_endGettingEntries == null) missing.Add("LogEntries.EndGettingEntries()");
-                    if (_getEntryInternal == null) missing.Add("LogEntries.GetEntryInternal(int, LogEntry)");
+                    if (_startGettingEntries is null) missing.Add("LogEntries.StartGettingEntries()");
+                    if (_endGettingEntries is null) missing.Add("LogEntries.EndGettingEntries()");
+                    if (_getEntryInternal is null) missing.Add("LogEntries.GetEntryInternal(int, LogEntry)");
                 }
 
-                if (_logEntryType != null)
+                if (_logEntryType is not null)
                 {
                     _messageField = _logEntryType.GetField("message", I) ?? _logEntryType.GetField("condition", I);
                     _modeField = _logEntryType.GetField("mode", I);
-                    if (_messageField == null) missing.Add("LogEntry.message (or .condition)");
-                    if (_modeField == null) missing.Add("LogEntry.mode");
+                    if (_messageField is null) missing.Add("LogEntry.message (or .condition)");
+                    if (_modeField is null) missing.Add("LogEntry.mode");
                 }
 
                 _reflectionOk = missing.Count == 0;
@@ -163,7 +163,7 @@ namespace Adanub.UnityMcp.Editor.Commands
             try
             {
                 object sge = _startGettingEntries.Invoke(null, null);
-                total = sge is int n ? n : (_getCount != null ? (int)_getCount.Invoke(null, null) : 0);
+                total = sge is int n ? n : (_getCount is not null ? (int)_getCount.Invoke(null, null) : 0);
             }
             catch (Exception ex) { return ReadFailure("starting the console read", ex); }
 
@@ -183,7 +183,7 @@ namespace Adanub.UnityMcp.Editor.Commands
                     string full = _messageField.GetValue(entry) as string ?? "";
                     int mode = Convert.ToInt32(_modeField.GetValue(entry));
                     int repeat = 1;
-                    if (_getEntryCount != null) { rowBox[0] = i; repeat = (int)_getEntryCount.Invoke(null, rowBox); }
+                    if (_getEntryCount is not null) { rowBox[0] = i; repeat = (int)_getEntryCount.Invoke(null, rowBox); }
 
                     string type = ClassifyType(mode);
                     if (typeFilter == "error" && type != "error") continue;
@@ -193,7 +193,7 @@ namespace Adanub.UnityMcp.Editor.Commands
                     int nl = full.IndexOf('\n');
                     string condition = nl >= 0 ? full.Substring(0, nl) : full;
 
-                    if (re != null) { if (!re.IsMatch(condition)) continue; }
+                    if (re is not null) { if (!re.IsMatch(condition)) continue; }
                     else if (!string.IsNullOrEmpty(match) && condition.IndexOf(match, StringComparison.OrdinalIgnoreCase) < 0) continue;
 
                     if (collapse)
@@ -259,7 +259,7 @@ namespace Adanub.UnityMcp.Editor.Commands
         {
             ResolveReflection();
             if (!_reflectionOk) return new { error = _bindError };
-            if (_clearMethod == null)
+            if (_clearMethod is null)
                 return new { error = $"LogEntries.Clear() not found on Unity {Application.unityVersion}. " + FixHint };
             try
             {
@@ -342,7 +342,7 @@ namespace Adanub.UnityMcp.Editor.Commands
             try
             {
                 var restored = JsonConvert.DeserializeObject<List<CompileMessage>>(json);
-                if (restored != null)
+                if (restored is not null)
                     lock (_compileMessages) { _compileMessages.Clear(); _compileMessages.AddRange(restored); }
             }
             catch { /* ignore malformed persisted state */ }

@@ -83,14 +83,14 @@ namespace Adanub.UnityMcp.Editor.Commands
         }
 
         /// <summary>Serialise a component's top-level visible serialized properties to a dictionary.</summary>
-        public static Dictionary<string, object> SerializeComponent(Component component, int maxProps = 200)
-            => SerializeUnityObject(component, maxProps);
+        public static Dictionary<string, object> SerialiseComponent(Component component, int maxProps = 200)
+            => SerialiseUnityObject(component, maxProps);
 
         /// <summary>
         /// Serialise any UnityEngine.Object's top-level visible serialized properties (components,
         /// ScriptableObjects, assets) — captures [SerializeField] privates as the inspector sees them.
         /// </summary>
-        public static Dictionary<string, object> SerializeUnityObject(UnityEngine.Object obj, int maxProps = 200)
+        public static Dictionary<string, object> SerialiseUnityObject(UnityEngine.Object obj, int maxProps = 200)
         {
             var dict = new Dictionary<string, object>();
             if (obj == null) return dict;
@@ -104,7 +104,7 @@ namespace Adanub.UnityMcp.Editor.Commands
                     do
                     {
                         if (prop.name == "m_Script") continue;
-                        dict[prop.name] = SerializeProperty(prop);
+                        dict[prop.name] = SerialiseProperty(prop);
                         count++;
                     }
                     while (count < maxProps && prop.NextVisible(false));
@@ -113,7 +113,7 @@ namespace Adanub.UnityMcp.Editor.Commands
             return dict;
         }
 
-        public static object SerializeProperty(SerializedProperty p)
+        public static object SerialiseProperty(SerializedProperty p)
         {
             switch (p.propertyType)
             {
@@ -125,7 +125,7 @@ namespace Adanub.UnityMcp.Editor.Commands
                 case SerializedPropertyType.ArraySize: return p.intValue;
                 case SerializedPropertyType.Character: return p.intValue;
                 case SerializedPropertyType.Enum:
-                    return (p.enumValueIndex >= 0 && p.enumNames != null && p.enumValueIndex < p.enumNames.Length)
+                    return (p.enumValueIndex >= 0 && p.enumNames is not null && p.enumValueIndex < p.enumNames.Length)
                         ? (object)p.enumNames[p.enumValueIndex]
                         : p.intValue;
                 case SerializedPropertyType.Color:
@@ -191,7 +191,7 @@ namespace Adanub.UnityMcp.Editor.Commands
             var direct = Type.GetType(name)
                 ?? Type.GetType($"UnityEngine.{name}, UnityEngine")
                 ?? Type.GetType($"UnityEditor.{name}, UnityEditor");
-            if (direct != null) return direct;
+            if (direct is not null) return direct;
 
             foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
             {
