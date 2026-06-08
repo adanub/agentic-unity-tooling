@@ -1,0 +1,19 @@
+{
+  "name": "adanub-unity-mcp",
+  "version": "0.1.0",
+  "description": "MCP stdio server bridging Claude to the Adanub Unity MCP editor plugin.",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "adanub-unity-mcp": "./src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

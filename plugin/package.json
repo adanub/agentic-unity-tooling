@@ -1,0 +1,22 @@
+{
+  "name": "com.adanub.unity-mcp",
+  "version": "0.1.0",
+  "displayName": "Adanub Unity MCP",
+  "description": "MCP bridge for Unity Editor observability and inspection. Lets an AI agent read console logs, compilation errors, profiler/memory data, and scene/asset state from a running Unity Editor over a local HTTP bridge.",
+  "unity": "6000.0",
+  "keywords": [
+    "mcp",
+    "ai",
+    "editor",
+    "profiler",
+    "observability"
+  ],
+  "author": {
+    "name": "adanub"
+  },
+  "dependencies": {
+    "com.unity.nuget.newtonsoft-json": "3.2.2"
+  },
+  "license": "MIT",
+  "type": "tool"
+}

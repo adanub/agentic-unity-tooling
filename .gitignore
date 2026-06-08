@@ -1,0 +1,9 @@
+# Node
+server/node_modules/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Unity (the plugin/ folder is a UPM package — its .meta files ARE tracked)
