@@ -77,16 +77,23 @@ The console reader uses internal `UnityEditor.LogEntries` reflection. On a Unity
 those members it fails with a **specific** error naming the unbound member, the Unity version, and the
 file to fix (`plugin/Editor/Commands/ConsoleCommands.cs`).
 
+My projects are currently using Unity 6.3 LTS, so that is what this tooling currently targets; if a
+different version of Unity has differences for the methods/code accessed through reflection, certain
+parts of this tooling may not work, but hopefully the errors make it clear why, rather than silently
+failing in unexpected ways.
+
 ## Deliberately not included
 
-Scene/asset mutation tools. 
+Scene/asset mutation tools. I currently intend to keep this repo for providing Unity observability
+features that Claude Code either doesn't have clean access to, or a more efficient way of accessing
+info it already can through generic bash and grep commands.
 
-The **frame debugger** - renderdoc already covers most use cases better than the
+The **frame debugger** - renderdoc already covers most relevant use cases better than the
 frame debugger does, see https://renderdoc.org/ and https://github.com/EdenLabs/agentic-renderdoc
 ; its one unique use-case is per-draw *batch-break reasons*, which would be an easy reflection-only
 add if ever needed.
 
-The **test runner**, and **package registry search**. The latter two would need
+The **test runner**, and **package registry search**. These two would need
 an async/deferred bridge path (a route that resolves across editor frames instead of returning
 synchronously, so the mainthread can keep ticking to advance the async Unity API) that the current
 synchronous bridge omits.
