@@ -4,6 +4,8 @@ An MCP toolset for **observing and inspecting** a running Unity Editor from an A
 console logs, compilation errors, profiler/memory data, and scene/asset/prefab/project state.
 Read-focused by design (not an "AI builds your scene" tool). Project-agnostic and reusable.
 
+Designed to be automatically setup by Claude Code with minimal user intervention needed.
+
 Package id `com.adanub.unity-mcp`. MIT-licensed. Clean-room implementation.
 
 ## Architecture
@@ -77,12 +79,17 @@ file to fix (`plugin/Editor/Commands/ConsoleCommands.cs`).
 
 ## Deliberately not included
 
-Observability-only — no scene/asset mutation tools. Also intentionally skipped as low-value for a
-read-focused tool: the **frame debugger** (a full GPU capture tool covers it; its one unique slice is
-per-draw *batch-break reasons*, which would be a cheap reflection-only add if ever needed), the
-**test runner**, and **package registry search**. The latter two would need an async/deferred bridge
-path (a route that resolves across editor frames instead of returning synchronously, so the main
-thread can keep ticking to advance the async Unity API) that the current synchronous bridge omits.
+Scene/asset mutation tools. 
+
+The **frame debugger** - renderdoc already covers most use cases better than the
+frame debugger does, see https://renderdoc.org/ and https://github.com/EdenLabs/agentic-renderdoc
+; its one unique use-case is per-draw *batch-break reasons*, which would be an easy reflection-only
+add if ever needed.
+
+The **test runner**, and **package registry search**. The latter two would need
+an async/deferred bridge path (a route that resolves across editor frames instead of returning
+synchronously, so the mainthread can keep ticking to advance the async Unity API) that the current
+synchronous bridge omits.
 
 ## Licence
 
