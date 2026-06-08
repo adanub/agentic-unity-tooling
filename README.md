@@ -75,6 +75,15 @@ The console reader uses internal `UnityEditor.LogEntries` reflection. On a Unity
 those members it fails with a **specific** error naming the unbound member, the Unity version, and the
 file to fix (`plugin/Editor/Commands/ConsoleCommands.cs`).
 
+## Deliberately not included
+
+Observability-only — no scene/asset mutation tools. Also intentionally skipped as low-value for a
+read-focused tool: the **frame debugger** (a full GPU capture tool covers it; its one unique slice is
+per-draw *batch-break reasons*, which would be a cheap reflection-only add if ever needed), the
+**test runner**, and **package registry search**. The latter two would need an async/deferred bridge
+path (a route that resolves across editor frames instead of returning synchronously, so the main
+thread can keep ticking to advance the async Unity API) that the current synchronous bridge omits.
+
 ## Licence
 
 MIT — see `LICENSE`. Contains no third-party MCP/plugin code.
