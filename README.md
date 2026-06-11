@@ -1,7 +1,9 @@
 # agentic-unity-tooling
 
 An MCP toolset for **observing and inspecting** a running Unity Editor from an AI agent —
-console logs, compilation errors, profiler/memory data, and scene/asset/prefab/project state.
+console logs, compilation errors, profiler/memory data, and scene/asset/prefab/project state —
+plus one deliberate write path: **triggering an asset refresh + script compile**, so an agent
+that edits scripts on disk gets compiler feedback without a human having to focus the editor.
 Read-focused by design (not an "AI builds your scene" tool). Project-agnostic and reusable.
 
 Designed to be automatically setup by Claude Code with minimal user intervention needed.
@@ -21,8 +23,11 @@ Unity Editor code can't itself be an MCP stdio process, so the tool is split:
 | `plugin/` | Unity UPM package (`com.adanub.unity-mcp`). An `HttpListener` bridge + reflection-dispatched route handlers, Editor-only. Routes self-register via `[McpRoute("...")]` — adding a tool is a self-contained command class, no central switch. |
 | `server/` | Node MCP stdio server. Exposes `unity_*` tools that forward to the bridge.            |
 
-The bridge marshals every call onto Unity's main thread, survives domain reloads, and binds the
-first free port in **7890–7899** so multiple editors (e.g. game client + server) run side by side.
+The bridge marshals calls onto Unity's main thread (routes can opt into running on the request
+thread instead — used for long-polling, e.g. `compile/status`), survives domain reloads, and binds
+the first free port in **7890–7899** so multiple editors (e.g. game client + server) run side by
+side. The Node server retries through a domain reload's bridge outage with backoff, re-locating
+the editor by project path if the reload moved it to a different port.
 
 ## Install
 
@@ -49,11 +54,17 @@ node "<somewhere>/agentic-unity-tooling/server/src/index.js" --list-readonly-too
 Then restart the MCP client and focus the Unity editor so it compiles the package; the bridge logs
 `[Adanub MCP] Bridge started on http://127.0.0.1:789x/`.
 
-## Tools (read-only)
+## Tools
 
 - **Observe**: console log (collapses per-frame spam with counts; reads Unity's own Console store),
   compilation errors (survive domain reload), editor/project/scene state, profiler stats/memory/
   frame-data/analyze, asset memory breakdown + top consumers.
+- **Compile**: `unity_compile_request` triggers `AssetDatabase.Refresh()` so the editor picks up
+  script edits made on disk — deferred onto `EditorApplication.update` (NOT `delayCall`, which an
+  unfocused editor can defer indefinitely), so it works with the editor in the background.
+  `unity_compile_status` long-polls the session until `finished` with result
+  `clean | errors | noCompile` plus the compiler messages. The session survives the clean-compile
+  domain reload via `SessionState`; on errors there is no reload and results are immediate.
 - **Inspect**: scene hierarchy (bounded), search by name/component/tag/layer/shader, asset search,
   missing references, selection, GameObject + component properties, prefab info/hierarchy/
   variant overrides.
@@ -62,9 +73,9 @@ Then restart the MCP client and focus the Unity editor so it compiles the packag
 - **Project config**: tags/layers, physics collision matrix, assembly definitions, sprite atlases,
   input actions, packages, scene-view camera, editor/player prefs.
 
-Three tools change editor state and are excluded from the default read-only allowlist (`console_clear`,
-`selection_set`, `selection_focus_scene_view`). `node server/src/index.js --list-readonly-tools`
-emits the safe set.
+Four tools change editor state and are excluded from the default read-only allowlist (`console_clear`,
+`selection_set`, `selection_focus_scene_view`, `compile_request`). `node server/src/index.js
+--list-readonly-tools` emits the safe set.
 
 ## Multi-instance
 
@@ -86,17 +97,19 @@ failing in unexpected ways.
 
 Scene/asset mutation tools. I currently intend to keep this repo for providing Unity observability
 features that Claude Code either doesn't have clean access to, or a more efficient way of accessing
-info it already can through generic bash and grep commands.
+info it already can through generic bash and grep commands. The compile trigger
+(`unity_compile_request`) is the one deliberate exception — it closes the edit → compile → errors
+feedback loop for an agent that edits scripts on disk, which is observability's missing half.
 
 The **frame debugger** - renderdoc already covers most relevant use cases better than the
 frame debugger does, see https://renderdoc.org/ and https://github.com/EdenLabs/agentic-renderdoc
 ; its one unique use-case is per-draw *batch-break reasons*, which would be an easy reflection-only
 add if ever needed.
 
-The **test runner**, and **package registry search**. These two would need
-an async/deferred bridge path (a route that resolves across editor frames instead of returning
-synchronously, so the mainthread can keep ticking to advance the async Unity API) that the current
-synchronous bridge omits.
+The **test runner**, and **package registry search**. These two would need results collected
+across editor frames from async Unity APIs; the bridge's request-thread option (`RunOnRequestThread`,
+used by `compile/status` to long-poll main-thread snapshots) provides the waiting half of that, but
+the cross-frame result plumbing doesn't yet exist.
 
 ## Licence
 

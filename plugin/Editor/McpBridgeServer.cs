@@ -156,7 +156,9 @@ namespace Adanub.UnityMcp.Editor
 
         private sealed class CancelToken { public volatile bool Cancelled; }
 
-        private static object RunOnMainThread(Func<object> work)
+        // Internal so RunOnRequestThread route handlers (which own their threading) can take
+        // main-thread state snapshots between waits.
+        internal static object RunOnMainThread(Func<object> work)
         {
             if (Thread.CurrentThread.ManagedThreadId == _mainThreadId)
                 return work();
@@ -234,7 +236,18 @@ namespace Adanub.UnityMcp.Editor
                         body = reader.ReadToEnd();
                 }
 
-                object result = RunOnMainThread(() => Dispatch(route, body));
+                object result;
+                if (McpRouteRegistry.TryGet(route, out var entry) && entry.RunOnRequestThread)
+                {
+                    // Long-polling handler: runs on this request thread and hops to the main
+                    // thread itself per snapshot, so the editor never blocks on the wait.
+                    try { result = Invoke(entry, body); }
+                    catch (Exception ex) { result = new { error = ex.GetBaseException().Message, stackTrace = ex.GetBaseException().StackTrace }; }
+                }
+                else
+                {
+                    result = RunOnMainThread(() => Dispatch(route, body));
+                }
                 SendJson(response, 200, result);
             }
             catch (Exception ex)
@@ -248,6 +261,11 @@ namespace Adanub.UnityMcp.Editor
             if (!McpRouteRegistry.TryGet(route, out var entry))
                 return new { error = $"Unknown route: {route}" };
 
+            return Invoke(entry, body);
+        }
+
+        private static object Invoke(McpRouteRegistry.RouteEntry entry, string body)
+        {
             JObject args;
             try
             {

@@ -12,12 +12,12 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 
-import { callBridge } from "./bridge.js";
 import {
   discoverInstances,
   selectInstance,
   resolveTargetPort,
   describeInstances,
+  callWithRecovery,
 } from "./instances.js";
 
 // ─── Forwarding tools (each maps to a bridge route) ───
@@ -69,6 +69,32 @@ const TOOLS = [
       },
     },
     route: "compilation/errors",
+  },
+  {
+    name: "unity_compile_request",
+    description:
+      "Trigger Unity to pick up script changes from disk (AssetDatabase.Refresh) and compile them — works " +
+      "without focusing the editor. Use after editing .cs files, then call unity_compile_status with waitMs " +
+      "to wait for the result.",
+    inputSchema: { type: "object", properties: {} },
+    route: "compile/request",
+    mutates: true,
+  },
+  {
+    name: "unity_compile_status",
+    description:
+      "Status/result of the compile session started by unity_compile_request. Phases: refreshQueued → " +
+      "waitingForCompile → compiling → finished; results: clean | errors | noCompile. Returns compiler " +
+      "errors/warnings. A clean compile's domain reload may briefly drop the bridge mid-call — the server " +
+      "retries automatically, so just await the result.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        waitMs: { type: "number", description: "Long-poll up to this many ms for phase=finished (0-25000, default 0 = immediate snapshot)." },
+        count: { type: "number", description: "Max compiler messages returned (default 50)." },
+      },
+    },
+    route: "compile/status",
   },
 
   // ── Editor / project / scene state ──
@@ -781,7 +807,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   try {
-    const result = await callBridge(tool.route, routeArgs, target.port);
+    const result = await callWithRecovery(tool.route, routeArgs, target);
     return text(JSON.stringify(result, null, 2));
   } catch (err) {
     return errorText(`Error: ${err.message}`);

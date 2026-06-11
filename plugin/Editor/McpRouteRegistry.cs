@@ -21,12 +21,14 @@ namespace Adanub.UnityMcp.Editor
             public readonly string Route;
             public readonly string Description;
             public readonly Func<JObject, object> Handler;
+            public readonly bool RunOnRequestThread;
 
-            public RouteEntry(string route, string description, Func<JObject, object> handler)
+            public RouteEntry(string route, string description, Func<JObject, object> handler, bool runOnRequestThread)
             {
                 Route = route;
                 Description = description;
                 Handler = handler;
+                RunOnRequestThread = runOnRequestThread;
             }
         }
 
@@ -35,20 +37,29 @@ namespace Adanub.UnityMcp.Editor
         // assembly and the lazy getter rebuilds — no explicit reset hook needed. (A
         // RuntimeInitializeOnLoadMethod reset would be wrong here: in this editor-only assembly it
         // fires on play-mode entry and, under Disable Domain Reload, would null a still-valid cache.)
-        private static Dictionary<string, RouteEntry> _routes;
+        // Request-thread routes look the registry up off the main thread, so the lazy build is
+        // double-checked-locked and publishes a fully-populated map (readers never see a partial one).
+        private static volatile Dictionary<string, RouteEntry> _routes;
+        private static readonly object _buildLock = new object();
 
         private static Dictionary<string, RouteEntry> Routes
         {
             get
             {
-                if (_routes == null) Build();
+                if (_routes == null)
+                {
+                    lock (_buildLock)
+                    {
+                        if (_routes == null) _routes = Build();
+                    }
+                }
                 return _routes;
             }
         }
 
-        private static void Build()
+        private static Dictionary<string, RouteEntry> Build()
         {
-            _routes = new Dictionary<string, RouteEntry>(StringComparer.Ordinal);
+            var routes = new Dictionary<string, RouteEntry>(StringComparer.Ordinal);
 
             var assembly = typeof(McpRouteRegistry).Assembly;
             foreach (var type in assembly.GetTypes())
@@ -76,7 +87,7 @@ namespace Adanub.UnityMcp.Editor
                         continue;
                     }
 
-                    if (_routes.ContainsKey(attr.Route))
+                    if (routes.ContainsKey(attr.Route))
                     {
                         Debug.LogError($"[Adanub MCP] Duplicate route '{attr.Route}' — ignoring {type.Name}.{method.Name}.");
                         continue;
@@ -84,9 +95,11 @@ namespace Adanub.UnityMcp.Editor
 
                     var captured = method;
                     Func<JObject, object> handler = args => captured.Invoke(null, new object[] { args });
-                    _routes[attr.Route] = new RouteEntry(attr.Route, attr.Description, handler);
+                    routes[attr.Route] = new RouteEntry(attr.Route, attr.Description, handler, attr.RunOnRequestThread);
                 }
             }
+
+            return routes;
         }
 
         private static bool IsValidSignature(MethodInfo method)

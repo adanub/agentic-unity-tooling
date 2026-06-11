@@ -17,6 +17,14 @@ namespace Adanub.UnityMcp.Editor
         /// <summary>Optional one-line description, surfaced to discovery tooling.</summary>
         public string Description { get; }
 
+        /// <summary>
+        /// When true the handler runs on the HTTP request (ThreadPool) thread instead of being
+        /// marshalled onto the Unity main thread. For long-polling handlers that would otherwise
+        /// block the editor; such handlers must not touch Unity APIs directly — use
+        /// <c>McpBridgeServer.RunOnMainThread</c> for each state snapshot.
+        /// </summary>
+        public bool RunOnRequestThread { get; set; }
+
         public McpRouteAttribute(string route, string description = null)
         {
             Route = route;

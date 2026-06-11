@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using System.Text.RegularExpressions;
+using System.Threading;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
@@ -23,6 +24,11 @@ namespace Adanub.UnityMcp.Editor.Commands
     ///
     /// Compiler errors/warnings are captured separately via CompilationPipeline (structured
     /// file/line/column) and persisted across the domain reload so warnings survive recompiles.
+    ///
+    /// Also owns the compile *session* routes (compile/request + compile/status): an external
+    /// agent that edits scripts on disk can trigger an AssetDatabase.Refresh and then long-poll
+    /// the session until the resulting compile finishes (or is found to be unnecessary). The
+    /// session survives the success-path domain reload via SessionState.
     /// </summary>
     [InitializeOnLoad]
     public static class ConsoleCommands
@@ -31,6 +37,7 @@ namespace Adanub.UnityMcp.Editor.Commands
         {
             EnsureCompilationHook();
             RestoreCompileMessages();
+            RestoreSession();
         }
 
         // ───────────────────────────── Console log reading (LogEntries) ─────────────────────────────
@@ -291,7 +298,10 @@ namespace Adanub.UnityMcp.Editor.Commands
         {
             if (_compileHooked) return;
             CompilationPipeline.compilationStarted += OnCompilationStarted;
+            CompilationPipeline.compilationFinished += OnCompilationFinished;
             CompilationPipeline.assemblyCompilationFinished += OnAssemblyCompiled;
+            AssemblyReloadEvents.beforeAssemblyReload += OnBeforeAssemblyReloadSession;
+            EditorApplication.update += OnEditorTickSession;
             _compileHooked = true;
         }
 
@@ -299,6 +309,12 @@ namespace Adanub.UnityMcp.Editor.Commands
         {
             lock (_compileMessages) _compileMessages.Clear();
             PersistCompileMessages();
+
+            if (_sessionPhase == PhaseRefreshQueued || _sessionPhase == PhaseWaitingForCompile)
+            {
+                _sessionPhase = PhaseCompiling;
+                PersistSession();
+            }
         }
 
         private static void OnAssemblyCompiled(string assemblyPath, CompilerMessage[] messages)
@@ -380,6 +396,246 @@ namespace Adanub.UnityMcp.Editor.Commands
                 { "count", picked.Count },
                 { "isCompiling", EditorApplication.isCompiling },
                 { "entries", picked },
+            };
+        }
+
+        // ──────────────────────────── Compile session (compile/request + compile/status) ────────────────────────────
+        //
+        // Phases: idle → refreshQueued → waitingForCompile → compiling → finished.
+        // Results (only when finished): clean | errors | noCompile.
+        //
+        // The refresh is deferred by a couple of EditorApplication.update ticks so the HTTP
+        // response for compile/request is flushed before the (synchronous) refresh/import work
+        // starts. NOT delayCall: an unfocused editor services update but can defer delayCall
+        // indefinitely (it rides the GUI/inspector cycle), and triggering a compile without
+        // having to focus the editor is the whole point of this route. On a clean compile Unity
+        // reloads the domain; the session survives via SessionState and is restored as
+        // finished/clean with domainReloaded=true.
+
+        private const string PhaseIdle = "idle";
+        private const string PhaseRefreshQueued = "refreshQueued";
+        private const string PhaseWaitingForCompile = "waitingForCompile";
+        private const string PhaseCompiling = "compiling";
+        private const string PhaseFinished = "finished";
+
+        private const string ResultClean = "clean";
+        private const string ResultErrors = "errors";
+        private const string ResultNoCompile = "noCompile";
+
+        // Quiet time (no compiling, no importing) after the refresh before concluding that no
+        // compile was needed. Activity restarts the timer, so slow imports don't cause a false
+        // noCompile while a script compile is still queued behind them.
+        private const double NoCompileGraceSeconds = 2.0;
+
+        private const string SessionKey = "Adanub_UnityMcp_CompileSession";
+
+        private static int _sessionId;
+        private static string _sessionPhase = PhaseIdle;
+        private static string _sessionResult;      // null until finished
+        private static bool _sessionDomainReloaded;
+        private static double _sessionQuietSince;  // timeSinceStartup when the grace timer (re)started
+        private static int _refreshTicksRemaining; // >0: update ticks until the deferred refresh runs
+
+        [Serializable]
+        private sealed class SessionSnapshot
+        {
+            public int Id;
+            public string Phase;
+            public string Result;
+            public bool ReloadPending;
+        }
+
+        private static void PersistSession(bool reloadPending = false)
+        {
+            try
+            {
+                SessionState.SetString(SessionKey, JsonConvert.SerializeObject(new SessionSnapshot
+                {
+                    Id = _sessionId,
+                    Phase = _sessionPhase,
+                    Result = _sessionResult,
+                    ReloadPending = reloadPending,
+                }));
+            }
+            catch { /* best-effort */ }
+        }
+
+        private static void OnBeforeAssemblyReloadSession()
+        {
+            if (_sessionId == 0 || _sessionPhase == PhaseIdle) return;
+            PersistSession(reloadPending: true);
+        }
+
+        private static void RestoreSession()
+        {
+            string json = SessionState.GetString(SessionKey, "");
+            if (string.IsNullOrEmpty(json)) return;
+
+            SessionSnapshot snap;
+            try { snap = JsonConvert.DeserializeObject<SessionSnapshot>(json); }
+            catch { return; }
+            if (snap is null) return;
+
+            _sessionId = snap.Id;
+            if (snap.ReloadPending)
+            {
+                // We are on the far side of a domain reload. A reload only happens when
+                // compilation succeeded, so an unfinished session resolves to clean.
+                _sessionPhase = PhaseFinished;
+                _sessionResult = snap.Result ?? ResultClean;
+                _sessionDomainReloaded = true;
+                PersistSession();
+            }
+            else
+            {
+                _sessionPhase = snap.Phase ?? PhaseIdle;
+                _sessionResult = snap.Result;
+            }
+        }
+
+        private static void OnCompilationFinished(object context)
+        {
+            if (_sessionPhase != PhaseRefreshQueued &&
+                _sessionPhase != PhaseWaitingForCompile &&
+                _sessionPhase != PhaseCompiling) return;
+
+            bool anyErrors;
+            lock (_compileMessages) anyErrors = _compileMessages.Exists(m => m.Severity == "error");
+            _sessionPhase = PhaseFinished;
+            _sessionResult = anyErrors ? ResultErrors : ResultClean;
+            PersistSession();
+        }
+
+        private static void OnEditorTickSession()
+        {
+            if (_refreshTicksRemaining > 0)
+            {
+                _refreshTicksRemaining--;
+                if (_refreshTicksRemaining == 0) DoScheduledRefresh();
+            }
+
+            if (_sessionPhase != PhaseWaitingForCompile) return;
+
+            if (EditorApplication.isCompiling || EditorApplication.isUpdating)
+            {
+                _sessionQuietSince = EditorApplication.timeSinceStartup;
+                return;
+            }
+
+            if (EditorApplication.timeSinceStartup - _sessionQuietSince >= NoCompileGraceSeconds)
+            {
+                _sessionPhase = PhaseFinished;
+                _sessionResult = ResultNoCompile;
+                PersistSession();
+            }
+        }
+
+        private static void DoScheduledRefresh()
+        {
+            if (_sessionPhase != PhaseRefreshQueued) return; // superseded, or compile already started
+
+            AssetDatabase.Refresh();
+
+            if (_sessionPhase == PhaseRefreshQueued) // compilationStarted may have fired inside Refresh
+            {
+                _sessionPhase = PhaseWaitingForCompile;
+                _sessionQuietSince = EditorApplication.timeSinceStartup;
+                PersistSession();
+            }
+        }
+
+        [McpRoute("compile/request",
+            "Trigger an AssetDatabase.Refresh so the editor picks up script changes made on disk and compiles them. " +
+            "Returns immediately; poll compile/status (use waitMs to long-poll) until phase=finished.")]
+        public static object RequestCompile(JObject args)
+        {
+            EnsureCompilationHook();
+
+            _sessionId++;
+            _sessionPhase = PhaseRefreshQueued;
+            _sessionResult = null;
+            _sessionDomainReloaded = false;
+            PersistSession();
+
+            // Two update ticks ≈ enough for the request thread to flush the HTTP response;
+            // see the deferral note at the top of this region for why this is not delayCall.
+            _refreshTicksRemaining = 2;
+
+            return new Dictionary<string, object>
+            {
+                { "sessionId", _sessionId },
+                { "phase", _sessionPhase },
+                { "isPlaying", EditorApplication.isPlaying },
+            };
+        }
+
+        [McpRoute("compile/status",
+            "Status of the compile session started by compile/request. Args: waitMs (0-25000 — long-poll until " +
+            "finished or the wait elapses), count (max messages, default 50). On a clean compile the domain reload " +
+            "briefly drops the bridge connection — retry the call and it will report finished.",
+            RunOnRequestThread = true)]
+        public static object GetCompileStatus(JObject args)
+        {
+            int waitMs = Math.Clamp(args.Value<int?>("waitMs") ?? 0, 0, 25_000);
+            int maxMessages = Math.Max(1, args.Value<int?>("count") ?? 50);
+
+            var deadline = DateTime.UtcNow.AddMilliseconds(waitMs);
+            while (true)
+            {
+                string phase = null;
+                object payload = McpBridgeServer.RunOnMainThread(() =>
+                {
+                    phase = _sessionPhase;
+                    return BuildStatusPayload(maxMessages);
+                });
+
+                if (phase is null) return payload; // main-thread hop failed; payload is the error object
+                if (phase == PhaseFinished || phase == PhaseIdle || DateTime.UtcNow >= deadline) return payload;
+
+                Thread.Sleep(250);
+            }
+        }
+
+        // Main thread only.
+        private static object BuildStatusPayload(int maxMessages)
+        {
+            int errors = 0, warnings = 0;
+            var messages = new List<object>();
+            lock (_compileMessages)
+            {
+                foreach (var m in _compileMessages)
+                {
+                    if (m.Severity == "error") errors++;
+                    else warnings++;
+                }
+
+                for (int i = Math.Max(0, _compileMessages.Count - maxMessages); i < _compileMessages.Count; i++)
+                {
+                    var m = _compileMessages[i];
+                    messages.Add(new Dictionary<string, object>
+                    {
+                        { "file", m.File },
+                        { "line", m.Line },
+                        { "column", m.Column },
+                        { "message", m.Message },
+                        { "severity", m.Severity },
+                        { "assembly", m.Assembly },
+                    });
+                }
+            }
+
+            return new Dictionary<string, object>
+            {
+                { "sessionId", _sessionId },
+                { "phase", _sessionPhase },
+                { "result", _sessionResult },
+                { "domainReloaded", _sessionDomainReloaded },
+                { "isCompiling", EditorApplication.isCompiling },
+                { "isUpdating", EditorApplication.isUpdating },
+                { "isPlaying", EditorApplication.isPlaying },
+                { "errorCount", errors },
+                { "warningCount", warnings },
+                { "messages", messages },
             };
         }
     }
