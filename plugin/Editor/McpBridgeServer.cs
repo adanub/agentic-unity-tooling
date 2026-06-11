@@ -190,7 +190,12 @@ namespace Adanub.UnityMcp.Editor
 
             done.Dispose();
             if (error != null)
-                return new { error = error.Message, stackTrace = error.StackTrace };
+            {
+                // GetBaseException: reflection-invoked handlers surface as TargetInvocationException,
+                // whose own message ("Exception has been thrown by...") is useless to the caller.
+                var root = error.GetBaseException();
+                return new { error = root.Message, stackTrace = root.StackTrace };
+            }
             return result;
         }
 

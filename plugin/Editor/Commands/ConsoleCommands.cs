@@ -310,7 +310,10 @@ namespace Adanub.UnityMcp.Editor.Commands
             lock (_compileMessages) _compileMessages.Clear();
             PersistCompileMessages();
 
-            if (_sessionPhase == PhaseRefreshQueued || _sessionPhase == PhaseWaitingForCompile)
+            // Only adopt a compile that began after the session's own refresh ran — a compile
+            // already in flight when the session started would otherwise be mistaken for ours,
+            // finishing the session with its result while the queued refresh never executes.
+            if (_refreshDone && (_sessionPhase == PhaseRefreshQueued || _sessionPhase == PhaseWaitingForCompile))
             {
                 _sessionPhase = PhaseCompiling;
                 PersistSession();
@@ -435,6 +438,7 @@ namespace Adanub.UnityMcp.Editor.Commands
         private static bool _sessionDomainReloaded;
         private static double _sessionQuietSince;  // timeSinceStartup when the grace timer (re)started
         private static int _refreshTicksRemaining; // >0: update ticks until the deferred refresh runs
+        private static bool _refreshDone;          // the current session's AssetDatabase.Refresh has executed
 
         [Serializable]
         private sealed class SessionSnapshot
@@ -443,6 +447,7 @@ namespace Adanub.UnityMcp.Editor.Commands
             public string Phase;
             public string Result;
             public bool ReloadPending;
+            public bool DomainReloaded;
         }
 
         private static void PersistSession(bool reloadPending = false)
@@ -455,6 +460,7 @@ namespace Adanub.UnityMcp.Editor.Commands
                     Phase = _sessionPhase,
                     Result = _sessionResult,
                     ReloadPending = reloadPending,
+                    DomainReloaded = _sessionDomainReloaded,
                 }));
             }
             catch { /* best-effort */ }
@@ -463,7 +469,14 @@ namespace Adanub.UnityMcp.Editor.Commands
         private static void OnBeforeAssemblyReloadSession()
         {
             if (_sessionId == 0 || _sessionPhase == PhaseIdle) return;
-            PersistSession(reloadPending: true);
+
+            // ReloadPending marks a reload the session must resolve on restore: its own
+            // clean-compile reload (finished/clean not yet flagged) or a reload that pre-empted
+            // it mid-flight. Already-resolved sessions (errors / noCompile / clean-and-flagged)
+            // persist as-is so a later unrelated reload can't rewrite their result.
+            bool awaitingOwnReload =
+                _sessionPhase == PhaseFinished && _sessionResult == ResultClean && !_sessionDomainReloaded;
+            PersistSession(reloadPending: awaitingOwnReload || _sessionPhase != PhaseFinished);
         }
 
         private static void RestoreSession()
@@ -477,27 +490,45 @@ namespace Adanub.UnityMcp.Editor.Commands
             if (snap is null) return;
 
             _sessionId = snap.Id;
-            if (snap.ReloadPending)
-            {
-                // We are on the far side of a domain reload. A reload only happens when
-                // compilation succeeded, so an unfinished session resolves to clean.
-                _sessionPhase = PhaseFinished;
-                _sessionResult = snap.Result ?? ResultClean;
-                _sessionDomainReloaded = true;
-                PersistSession();
-            }
-            else
+            _sessionDomainReloaded = snap.DomainReloaded;
+
+            if (!snap.ReloadPending)
             {
                 _sessionPhase = snap.Phase ?? PhaseIdle;
                 _sessionResult = snap.Result;
+                return;
             }
+
+            switch (snap.Phase)
+            {
+                case PhaseRefreshQueued:
+                case PhaseWaitingForCompile:
+                    // The reload pre-empted the session before its compile began (play-mode
+                    // entry, user-triggered reload, ...). Re-arm the refresh in the new domain
+                    // rather than reporting a compile that never happened.
+                    _sessionPhase = PhaseRefreshQueued;
+                    _sessionResult = null;
+                    _refreshDone = false;
+                    _refreshTicksRemaining = 2;
+                    break;
+
+                default:
+                    // compiling/finished: the reload is the clean compile's own assembly swap
+                    // (compilationFinished fires before the reload, so compiling here is the
+                    // rare missed-event case — the swap still means the compile succeeded).
+                    _sessionPhase = PhaseFinished;
+                    _sessionResult = snap.Result ?? ResultClean;
+                    _sessionDomainReloaded = true;
+                    break;
+            }
+            PersistSession();
         }
 
         private static void OnCompilationFinished(object context)
         {
-            if (_sessionPhase != PhaseRefreshQueued &&
-                _sessionPhase != PhaseWaitingForCompile &&
-                _sessionPhase != PhaseCompiling) return;
+            // Only compiling — pre-session compiles must not finish the session (their start was
+            // rejected above, so their finish must be too).
+            if (_sessionPhase != PhaseCompiling) return;
 
             bool anyErrors;
             lock (_compileMessages) anyErrors = _compileMessages.Exists(m => m.Severity == "error");
@@ -534,6 +565,7 @@ namespace Adanub.UnityMcp.Editor.Commands
         {
             if (_sessionPhase != PhaseRefreshQueued) return; // superseded, or compile already started
 
+            _refreshDone = true; // before Refresh — compilationStarted can fire inside it
             AssetDatabase.Refresh();
 
             if (_sessionPhase == PhaseRefreshQueued) // compilationStarted may have fired inside Refresh
@@ -555,6 +587,7 @@ namespace Adanub.UnityMcp.Editor.Commands
             _sessionPhase = PhaseRefreshQueued;
             _sessionResult = null;
             _sessionDomainReloaded = false;
+            _refreshDone = false;
             PersistSession();
 
             // Two update ticks ≈ enough for the request thread to flush the HTTP response;
@@ -569,32 +602,18 @@ namespace Adanub.UnityMcp.Editor.Commands
             };
         }
 
-        [McpRoute("compile/status",
-            "Status of the compile session started by compile/request. Args: waitMs (0-25000 — long-poll until " +
-            "finished or the wait elapses), count (max messages, default 50). On a clean compile the domain reload " +
-            "briefly drops the bridge connection — retry the call and it will report finished.",
-            RunOnRequestThread = true)]
-        public static object GetCompileStatus(JObject args)
+        // Main-thread snapshot for the request-thread long-poll. Returned as a 2-element array
+        // (phase, payload) so the caller can distinguish a real snapshot from the anonymous
+        // error object RunOnMainThread substitutes on timeout/exception — matching by shape is
+        // airtight where a captured-local sentinel is not (a late-running or throwing lambda
+        // can leave a stale/partial local behind).
+        internal static object[] SnapshotStatus(int maxMessages)
         {
-            int waitMs = Math.Clamp(args.Value<int?>("waitMs") ?? 0, 0, 25_000);
-            int maxMessages = Math.Max(1, args.Value<int?>("count") ?? 50);
-
-            var deadline = DateTime.UtcNow.AddMilliseconds(waitMs);
-            while (true)
-            {
-                string phase = null;
-                object payload = McpBridgeServer.RunOnMainThread(() =>
-                {
-                    phase = _sessionPhase;
-                    return BuildStatusPayload(maxMessages);
-                });
-
-                if (phase is null) return payload; // main-thread hop failed; payload is the error object
-                if (phase == PhaseFinished || phase == PhaseIdle || DateTime.UtcNow >= deadline) return payload;
-
-                Thread.Sleep(250);
-            }
+            return new object[] { _sessionPhase, BuildStatusPayload(maxMessages) };
         }
+
+        internal const string PhaseFinishedValue = PhaseFinished;
+        internal const string PhaseIdleValue = PhaseIdle;
 
         // Main thread only.
         private static object BuildStatusPayload(int maxMessages)
@@ -637,6 +656,44 @@ namespace Adanub.UnityMcp.Editor.Commands
                 { "warningCount", warnings },
                 { "messages", messages },
             };
+        }
+    }
+
+    /// <summary>
+    /// Long-polling compile/status route. Lives in its own type with no static state because
+    /// RunOnRequestThread handlers are invoked on a ThreadPool thread, which would run the
+    /// declaring type's static initialiser there — for <see cref="ConsoleCommands"/> that means
+    /// SessionState reads off the main thread during the editor's [InitializeOnLoad] window.
+    /// All ConsoleCommands access happens inside the main-thread hop instead.
+    /// </summary>
+    public static class CompileStatusRoute
+    {
+        [McpRoute("compile/status",
+            "Status of the compile session started by compile/request. Args: waitMs (0-25000 — long-poll until " +
+            "finished or the wait elapses), count (max messages, default 50). On a clean compile the domain reload " +
+            "briefly drops the bridge connection — retry the call and it will report finished.",
+            RunOnRequestThread = true)]
+        public static object GetCompileStatus(JObject args)
+        {
+            int waitMs = Math.Clamp(args.Value<int?>("waitMs") ?? 0, 0, 25_000);
+            int maxMessages = Math.Max(1, args.Value<int?>("count") ?? 50);
+
+            var deadline = DateTime.UtcNow.AddMilliseconds(waitMs);
+            while (true)
+            {
+                object result = McpBridgeServer.RunOnMainThread(() => ConsoleCommands.SnapshotStatus(maxMessages));
+                if (result is not object[] snap)
+                    return result; // hop timed out or threw; result is the error object
+
+                var phase = (string)snap[0];
+                object payload = snap[1];
+                if (phase == ConsoleCommands.PhaseFinishedValue ||
+                    phase == ConsoleCommands.PhaseIdleValue ||
+                    DateTime.UtcNow >= deadline)
+                    return payload;
+
+                Thread.Sleep(250);
+            }
         }
     }
 }

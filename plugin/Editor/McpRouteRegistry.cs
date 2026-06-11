@@ -46,11 +46,11 @@ namespace Adanub.UnityMcp.Editor
         {
             get
             {
-                if (_routes == null)
+                if (_routes is null)
                 {
                     lock (_buildLock)
                     {
-                        if (_routes == null) _routes = Build();
+                        if (_routes is null) _routes = Build();
                     }
                 }
                 return _routes;

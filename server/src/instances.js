@@ -90,7 +90,13 @@ export async function selectInstance(port) {
  * Returns one of: { port, projectPath? }, { needsSelection: [...] }, or { error }.
  */
 export async function resolveTargetPort(explicitPort) {
-  if (explicitPort) return { port: explicitPort };
+  if (explicitPort) {
+    // Capture the project identity behind the explicit port so the retry loop can follow the
+    // editor if a domain reload moves it (ports are first-free and can swap between editors).
+    // An unreachable port still resolves — the bridge may simply be mid-reload right now.
+    const info = await pingPort(explicitPort, 800);
+    return { port: explicitPort, projectPath: info?.projectPath || "" };
+  }
 
   loadSelection();
   let stalePath = "";
@@ -98,7 +104,11 @@ export async function resolveTargetPort(explicitPort) {
     // Validate the persisted selection still points at the same project (ports get reused).
     const info = await pingPort(_selection.port, 800);
     if (info && (!_selection.projectPath || info.projectPath === _selection.projectPath)) {
-      return { port: _selection.port, projectPath: _selection.projectPath || info.projectPath || "" };
+      return {
+        port: _selection.port,
+        projectPath: _selection.projectPath || info.projectPath || "",
+        fromSelection: true,
+      };
     }
     stalePath = _selection.projectPath || "";
     saveSelection(null); // stale — fall through to rediscovery
@@ -119,13 +129,18 @@ export async function resolveTargetPort(explicitPort) {
     const moved = instances.find((i) => i.projectPath === stalePath);
     if (moved) {
       saveSelection({ port: moved.port, projectPath: moved.projectPath });
-      return { port: moved.port, projectPath: moved.projectPath };
+      return { port: moved.port, projectPath: moved.projectPath, fromSelection: true };
     }
   }
 
   if (instances.length === 1) {
     saveSelection({ port: instances[0].port, projectPath: instances[0].projectPath });
-    return { port: instances[0].port, projectPath: instances[0].projectPath, autoSelected: instances[0] };
+    return {
+      port: instances[0].port,
+      projectPath: instances[0].projectPath,
+      fromSelection: true,
+      autoSelected: instances[0],
+    };
   }
   return { needsSelection: instances };
 }
@@ -158,34 +173,53 @@ function isTransientError(err) {
 
 /**
  * callBridge with retry/backoff on connection-level failures. `target` is the object returned
- * by resolveTargetPort ({ port, projectPath? }); when projectPath is known, the retry loop
- * re-discovers the project's bridge between attempts in case the reload moved it to a new port.
+ * by resolveTargetPort ({ port, projectPath?, fromSelection? }); when projectPath is known, the
+ * retry loop re-locates the project's bridge between attempts in case the reload moved it to a
+ * new port, and refuses to retry a port that another project's editor has since claimed.
  * Note retried calls re-execute on the bridge — all routes are idempotent or harmlessly
  * re-runnable (compile/request just re-triggers a refresh).
  */
 export async function callWithRecovery(route, args, target) {
   let port = target.port;
+  let portHijacked = false; // another project's editor currently owns `port`
+
   for (let attempt = 0; ; attempt++) {
-    try {
-      return await callBridge(route, args, port);
-    } catch (err) {
-      if (!isTransientError(err) || attempt >= MAX_RETRIES) throw err;
-
-      const delay = Math.min(RETRY_BASE_DELAY_MS * 2 ** attempt, RETRY_MAX_DELAY_MS);
-      console.error(
-        `[adanub-unity-mcp] ${route} on port ${port} unreachable (domain reload?) — ` +
-          `retry ${attempt + 1}/${MAX_RETRIES} in ${delay}ms`
+    if (!portHijacked) {
+      try {
+        return await callBridge(route, args, port);
+      } catch (err) {
+        if (!isTransientError(err) || attempt >= MAX_RETRIES) throw err;
+        console.error(
+          `[adanub-unity-mcp] ${route} on port ${port} unreachable (domain reload?) — ` +
+            `retry ${attempt + 1}/${MAX_RETRIES} in ${Math.min(RETRY_BASE_DELAY_MS * 2 ** attempt, RETRY_MAX_DELAY_MS)}ms`
+        );
+      }
+    } else if (attempt >= MAX_RETRIES) {
+      throw new Error(
+        `Unity editor for ${target.projectPath} did not come back within the retry budget ` +
+          `(its old port ${port} is now owned by a different editor).`
       );
-      await sleep(delay);
+    }
 
-      if (target.projectPath) {
-        const instances = await discoverInstances();
-        const found = instances.find((i) => i.projectPath === target.projectPath);
-        if (found && found.port !== port) {
+    await sleep(Math.min(RETRY_BASE_DELAY_MS * 2 ** attempt, RETRY_MAX_DELAY_MS));
+
+    if (target.projectPath) {
+      const instances = await discoverInstances();
+      const found = instances.find((i) => i.projectPath === target.projectPath);
+      if (found) {
+        if (found.port !== port) {
           console.error(`[adanub-unity-mcp] ${target.projectPath} moved from port ${port} to ${found.port}`);
           port = found.port;
-          saveSelection({ port, projectPath: target.projectPath });
+          // Only persist the move for selection-based targets — an explicit per-call port
+          // must not clobber the user's saved instance selection.
+          if (target.fromSelection) saveSelection({ port, projectPath: target.projectPath });
         }
+        portHijacked = false;
+      } else {
+        // Our editor is down. If another project's editor now owns this port, calling it
+        // would silently succeed against the wrong project — skip calls until our project
+        // reappears (on this port or another).
+        portHijacked = instances.some((i) => i.port === port);
       }
     }
   }

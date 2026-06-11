@@ -17,20 +17,28 @@ export async function callBridge(route, body = {}, port) {
   if (!port) throw new Error("callBridge requires a target port.");
   const url = `http://${HOST}:${port}/api/${route}`;
 
+  // Backstop for a frozen editor process (the bridge has its own 30s main-thread timeout, which
+  // normally returns first; this only fires if the HTTP layer itself hangs). Long-polling routes
+  // pass waitMs, which stacks ON TOP of the bridge's main-thread timeout in the worst case
+  // (poll loop + a final hop into a blocked main thread) — extend the budget accordingly so a
+  // legitimately busy editor doesn't get aborted mid-wait.
+  const waitMs = Math.min(Number(body?.waitMs) || 0, 60000);
+
   let res;
   try {
     res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body ?? {}),
-      // Backstop for a frozen editor process (the bridge has its own 30s main-thread timeout, which
-      // normally returns first; this only fires if the HTTP layer itself hangs).
-      signal: AbortSignal.timeout(35000),
+      signal: AbortSignal.timeout(35000 + waitMs),
     });
   } catch (err) {
+    // cause preserved so isTransientError can match ECONNREFUSED/ECONNRESET codes, not just
+    // the generic "fetch failed" message.
     throw new Error(
       `Could not reach the Unity bridge at ${url} (${err.message}). ` +
-        `Is that Unity editor still open with the Adanub Unity MCP plugin loaded?`
+        `Is that Unity editor still open with the Adanub Unity MCP plugin loaded?`,
+      { cause: err.cause ?? err }
     );
   }
 

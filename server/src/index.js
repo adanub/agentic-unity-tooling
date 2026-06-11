@@ -86,7 +86,8 @@ const TOOLS = [
       "Status/result of the compile session started by unity_compile_request. Phases: refreshQueued → " +
       "waitingForCompile → compiling → finished; results: clean | errors | noCompile. Returns compiler " +
       "errors/warnings. A clean compile's domain reload may briefly drop the bridge mid-call — the server " +
-      "retries automatically, so just await the result.",
+      "retries automatically, so just await the result. Caveat: in play mode the editor may defer compiles " +
+      "until play exits, so noCompile + isPlaying:true is inconclusive.",
     inputSchema: {
       type: "object",
       properties: {

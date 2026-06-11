@@ -21,7 +21,10 @@ namespace Adanub.UnityMcp.Editor
         /// When true the handler runs on the HTTP request (ThreadPool) thread instead of being
         /// marshalled onto the Unity main thread. For long-polling handlers that would otherwise
         /// block the editor; such handlers must not touch Unity APIs directly — use
-        /// <c>McpBridgeServer.RunOnMainThread</c> for each state snapshot.
+        /// <c>McpBridgeServer.RunOnMainThread</c> for each state snapshot. The declaring type's
+        /// static initialiser also runs on the request thread on first invocation, so declare
+        /// these handlers on a type with no static state (see <c>CompileStatusRoute</c>) rather
+        /// than on a command class whose initialiser touches Unity APIs.
         /// </summary>
         public bool RunOnRequestThread { get; set; }
 
