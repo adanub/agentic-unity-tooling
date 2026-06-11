@@ -310,7 +310,12 @@ namespace Adanub.UnityMcp.Editor
             }
             catch (Exception ex)
             {
-                Debug.LogError($"[Adanub MCP] Failed to send response: {ex.Message}");
+                // An in-flight response losing its listener to Stop() is expected during a domain
+                // reload (e.g. a compile/status long-poll spanning a clean compile) — the client
+                // retries after the reload, so don't pollute the console for it.
+                bool benignShutdown = !_isRunning && (ex is ObjectDisposedException || ex is HttpListenerException);
+                if (!benignShutdown)
+                    Debug.LogError($"[Adanub MCP] Failed to send response: {ex.Message}");
             }
             finally
             {
