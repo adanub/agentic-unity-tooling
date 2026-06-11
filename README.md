@@ -77,6 +77,21 @@ Four tools change editor state and are excluded from the default read-only allow
 `selection_set`, `selection_focus_scene_view`, `compile_request`). `node server/src/index.js
 --list-readonly-tools` emits the safe set.
 
+## Extending (adding routes/tools)
+
+A new route is a `[McpRoute("...")]` static method in `plugin/Editor/Commands/` plus a matching
+entry in `server/src/index.js` `TOOLS`. When developing one, test the route **via direct HTTP
+against the bridge** before restarting your MCP client — the running MCP server process and its
+registered tool list are stale until restart, but the bridge picks the route up as soon as Unity
+recompiles the plugin:
+
+```bash
+curl -s -X POST http://127.0.0.1:7890/api/your/route -d '{"arg": 1}'
+```
+
+This keeps the edit → compile → probe loop inside one session; the MCP-level registration is the
+only thing that needs the restart.
+
 ## Multi-instance
 
 Open more than one editor and each binds its own port. `unity_list_instances` enumerates them;
