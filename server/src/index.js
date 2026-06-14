@@ -732,6 +732,34 @@ const PORT_PROP = {
   },
 };
 
+// ─── Combined compile tool (locally orchestrated: request → poll → result) ───
+// One call does the whole edit-verify loop, so callers don't hand-orchestrate compile_request +
+// repeated compile_status (+ instance re-listing). Auto-selects the instance, triggers the
+// compile, and polls until it finishes — transparently outlasting the domain-reload bridge drop
+// (callWithRecovery re-locates the moved port) and re-polling past the empty mid-reload responses.
+const COMPILE_TOOL = {
+  name: "unity_compile",
+  description:
+    "Compile edited scripts in ONE call: triggers AssetDatabase.Refresh + compile, waits for it to " +
+    "finish (transparently handling the domain-reload bridge drop and re-polling past transient empty " +
+    "responses), and returns the result (clean | errors | noCompile) with compiler messages. Prefer this " +
+    "after editing .cs files instead of the separate unity_compile_request + unity_compile_status loop. " +
+    "Works without focusing the editor. Caveat: in play mode the editor may defer compiles until play " +
+    "exits, so noCompile + isPlaying:true is inconclusive.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      count: { type: "number", description: "Max compiler messages returned (default 50)." },
+      port: PORT_PROP.port,
+    },
+  },
+  mutates: true,
+};
+
+// Each poll long-polls the bridge up to 25s for phase=finished; this caps the total wait so a stuck
+// or never-finishing compile can't hang the call indefinitely (8 × 25s ≈ 200s worst case).
+const COMPILE_MAX_POLLS = 8;
+
 // ─── CLI: emit the read-only tool permission names (for the bootstrap allowlist) ───
 // `node src/index.js --list-readonly-tools` prints every non-mutating tool as a
 // Claude Code permission string, so the install can keep .claude/settings.json in
@@ -753,6 +781,7 @@ const server = new Server(
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     ...INSTANCE_TOOLS,
+    COMPILE_TOOL,
     ...TOOLS.map(({ name, description, inputSchema }) => ({
       name,
       description,
@@ -766,6 +795,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 
 const text = (s) => ({ content: [{ type: "text", text: s }] });
 const errorText = (s) => ({ content: [{ type: "text", text: s }], isError: true });
+
+// Poll compile/status until it reports phase=finished. callWithRecovery rides out the domain-reload
+// bridge drop (re-locating the moved port); this loop additionally re-polls past the empty/non-finished
+// responses the bridge can return mid-reload, so a single unity_compile call resolves to the result.
+async function waitForCompile(target, count) {
+  let last;
+  for (let i = 0; i < COMPILE_MAX_POLLS; i++) {
+    last = await callWithRecovery("compile/status", { waitMs: 25000, count }, target);
+    if (last && last.phase === "finished") return last;
+  }
+  return { ...(last || {}), note: "Compile did not report 'finished' within the poll budget." };
+}
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
@@ -789,6 +830,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (res.error) return errorText(res.error);
     const s = res.selected;
     return text(`Selected ${s.projectName} on port ${s.port} (Unity ${s.unityVersion}).\n${s.projectPath}`);
+  }
+
+  // ── Combined compile (locally orchestrated: request → poll → result) ──
+  if (name === "unity_compile") {
+    const { port: explicitPort, count } = args ?? {};
+    const target = await resolveTargetPort(explicitPort);
+    if (target.error) return errorText(target.error);
+    if (target.needsSelection) {
+      return errorText(
+        `Multiple Unity editors are open — select one before using this tool:\n` +
+          `${describeInstances(target.needsSelection)}\n\n` +
+          `Call unity_select_instance with the desired port (or pass port:<n> on the call).`
+      );
+    }
+    try {
+      await callWithRecovery("compile/request", {}, target);
+      const status = await waitForCompile(target, count);
+      return text(JSON.stringify(status, null, 2));
+    } catch (err) {
+      return errorText(`Error: ${err.message}`);
+    }
   }
 
   // ── Forwarding tools ──
