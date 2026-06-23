@@ -56,7 +56,7 @@ namespace Adanub.UnityMcp.Editor.Commands
 
         private static Type _logEntriesType, _logEntryType;
         private static MethodInfo _startGettingEntries, _endGettingEntries, _getCount, _getEntryInternal, _getEntryCount, _clearMethod;
-        private static FieldInfo _messageField, _modeField;
+        private static FieldInfo _messageField, _modeField, _callstackStartField;
         private static bool _reflectionResolved, _reflectionOk;
         private static string _bindError;
 
@@ -101,6 +101,10 @@ namespace Adanub.UnityMcp.Editor.Commands
                 {
                     _messageField = _logEntryType.GetField("message", I) ?? _logEntryType.GetField("condition", I);
                     _modeField = _logEntryType.GetField("mode", I);
+                    // Optional: the UTF-16 char offset where the stack trace begins within `message`. Present on
+                    // Unity 6.x; when bound we split there so a multi-line user message stays intact (rather than
+                    // misclassifying its 2nd+ lines as stack trace). Absent → first-newline fallback in SplitMessage.
+                    _callstackStartField = _logEntryType.GetField("callstackTextStartUTF16", I);
                     if (_messageField is null) missing.Add("LogEntry.message (or .condition)");
                     if (_modeField is null) missing.Add("LogEntry.mode");
                 }
@@ -130,11 +134,33 @@ namespace Adanub.UnityMcp.Editor.Commands
         private static string ClassifyType(int mode) =>
             (mode & ModeError) != 0 ? "error" : (mode & ModeWarning) != 0 ? "warning" : "log";
 
+        // Unity stores a log as "<user message>\n<stack trace>" in one field. Split into the (possibly multi-line)
+        // user message and the stack. Prefers Unity's own callstack offset so a multi-line message survives intact;
+        // falls back to the first newline when that field isn't bound (older Unity) — which misclassifies a
+        // multi-line message's 2nd+ lines as stack trace, the reason the offset is preferred.
+        private static void SplitMessage(object entry, string full, out string message, out string stack)
+        {
+            if (_callstackStartField is not null)
+            {
+                int cs = Convert.ToInt32(_callstackStartField.GetValue(entry));
+                if (cs > 0 && cs <= full.Length)
+                {
+                    message = full.Substring(0, cs).TrimEnd('\n', '\r');
+                    stack = full.Substring(cs);
+                    return;
+                }
+            }
+            int nl = full.IndexOf('\n');
+            message = nl >= 0 ? full.Substring(0, nl) : full;
+            stack = nl >= 0 ? full.Substring(nl + 1) : "";
+        }
+
         private sealed class LogAgg
         {
             public string Condition;
             public string Type;
             public string Full;
+            public string Stack;
             public int Count;
             public int LastIndex;
         }
@@ -197,8 +223,7 @@ namespace Adanub.UnityMcp.Editor.Commands
                     if (typeFilter == "warning" && type != "warning") continue;
                     if (typeFilter == "info" && type != "log") continue;
 
-                    int nl = full.IndexOf('\n');
-                    string condition = nl >= 0 ? full.Substring(0, nl) : full;
+                    SplitMessage(entry, full, out string condition, out string stack);
 
                     if (re is not null) { if (!re.IsMatch(condition)) continue; }
                     else if (!string.IsNullOrEmpty(match) && condition.IndexOf(match, StringComparison.OrdinalIgnoreCase) < 0) continue;
@@ -207,7 +232,7 @@ namespace Adanub.UnityMcp.Editor.Commands
                     {
                         if (!byKey.TryGetValue(full, out var agg))
                         {
-                            agg = new LogAgg { Condition = condition, Type = type, Full = full, Count = 0, LastIndex = i };
+                            agg = new LogAgg { Condition = condition, Type = type, Full = full, Stack = stack, Count = 0, LastIndex = i };
                             byKey[full] = agg;
                         }
                         agg.Count += repeat;
@@ -215,7 +240,7 @@ namespace Adanub.UnityMcp.Editor.Commands
                     }
                     else
                     {
-                        raw.Add(new LogAgg { Condition = condition, Type = type, Full = full, Count = repeat, LastIndex = i });
+                        raw.Add(new LogAgg { Condition = condition, Type = type, Full = full, Stack = stack, Count = repeat, LastIndex = i });
                     }
                 }
             }
@@ -243,10 +268,7 @@ namespace Adanub.UnityMcp.Editor.Commands
                     { "count", a.Count },
                 };
                 if (includeStack)
-                {
-                    int nl = a.Full.IndexOf('\n');
-                    d["stackTrace"] = nl >= 0 ? a.Full.Substring(nl + 1) : "";
-                }
+                    d["stackTrace"] = a.Stack;
                 entries.Add(d);
             }
 
