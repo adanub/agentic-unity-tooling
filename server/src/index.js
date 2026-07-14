@@ -15,9 +15,9 @@ import {
 import {
   discoverInstances,
   selectInstance,
-  resolveTargetPort,
   describeInstances,
-  callWithRecovery,
+  callUnity,
+  InstanceSelectionRequired,
 } from "./instances.js";
 
 // ─── Forwarding tools (each maps to a bridge route) ───
@@ -736,7 +736,9 @@ const PORT_PROP = {
 // One call does the whole edit-verify loop, so callers don't hand-orchestrate compile_request +
 // repeated compile_status (+ instance re-listing). Auto-selects the instance, triggers the
 // compile, and polls until it finishes — transparently outlasting the domain-reload bridge drop
-// (callWithRecovery re-locates the moved port) and re-polling past the empty mid-reload responses.
+// (callUnity re-resolves the moved port) and re-polling past the empty mid-reload responses.
+// The request call's resolved project identity is pinned for every status poll, so the
+// request/status pair can never split across editors mid-reload.
 const COMPILE_TOOL = {
   name: "unity_compile",
   description:
@@ -774,7 +776,7 @@ if (process.argv.includes("--list-readonly-tools")) {
 }
 
 const server = new Server(
-  { name: "adanub-unity-mcp", version: "0.2.0" },
+  { name: "adanub-unity-mcp", version: "0.3.0" },
   { capabilities: { tools: {} } }
 );
 
@@ -796,13 +798,23 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 const text = (s) => ({ content: [{ type: "text", text: s }] });
 const errorText = (s) => ({ content: [{ type: "text", text: s }], isError: true });
 
-// Poll compile/status until it reports phase=finished. callWithRecovery rides out the domain-reload
-// bridge drop (re-locating the moved port); this loop additionally re-polls past the empty/non-finished
+// Single owner of the callUnity failure → MCP response mapping, shared by every call site.
+const toolFailureText = (err) =>
+  err instanceof InstanceSelectionRequired
+    ? errorText(
+        `Multiple Unity editors are open — select one before using this tool:\n` +
+          `${describeInstances(err.instances)}\n\n` +
+          `Call unity_select_instance with the desired port (or pass port:<n> on the call).`
+      )
+    : errorText(`Error: ${err.message}`);
+
+// Poll compile/status until it reports phase=finished. callUnity rides out the domain-reload
+// bridge drop (re-resolving the moved port); this loop additionally re-polls past the empty/non-finished
 // responses the bridge can return mid-reload, so a single unity_compile call resolves to the result.
-async function waitForCompile(target, count) {
+async function waitForCompile(opts, count) {
   let last;
   for (let i = 0; i < COMPILE_MAX_POLLS; i++) {
-    last = await callWithRecovery("compile/status", { waitMs: 25000, count }, target);
+    ({ result: last } = await callUnity("compile/status", { waitMs: 25000, count }, opts));
     if (last && last.phase === "finished") return last;
   }
   return { ...(last || {}), note: "Compile did not report 'finished' within the poll budget." };
@@ -835,21 +847,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   // ── Combined compile (locally orchestrated: request → poll → result) ──
   if (name === "unity_compile") {
     const { port: explicitPort, count } = args ?? {};
-    const target = await resolveTargetPort(explicitPort);
-    if (target.error) return errorText(target.error);
-    if (target.needsSelection) {
-      return errorText(
-        `Multiple Unity editors are open — select one before using this tool:\n` +
-          `${describeInstances(target.needsSelection)}\n\n` +
-          `Call unity_select_instance with the desired port (or pass port:<n> on the call).`
-      );
-    }
     try {
-      await callWithRecovery("compile/request", {}, target);
-      const status = await waitForCompile(target, count);
+      const { projectPath } = await callUnity("compile/request", {}, { explicitPort });
+      const status = await waitForCompile({ explicitPort, pinnedPath: projectPath }, count);
       return text(JSON.stringify(status, null, 2));
     } catch (err) {
-      return errorText(`Error: ${err.message}`);
+      return toolFailureText(err);
     }
   }
 
@@ -858,22 +861,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (!tool) return errorText(`Unknown tool: ${name}`);
 
   const { port: explicitPort, ...routeArgs } = args ?? {};
-  const target = await resolveTargetPort(explicitPort);
-
-  if (target.error) return errorText(target.error);
-  if (target.needsSelection) {
-    return errorText(
-      `Multiple Unity editors are open — select one before using this tool:\n` +
-        `${describeInstances(target.needsSelection)}\n\n` +
-        `Call unity_select_instance with the desired port (or pass port:<n> on the call).`
-    );
-  }
-
   try {
-    const result = await callWithRecovery(tool.route, routeArgs, target);
+    const { result } = await callUnity(tool.route, routeArgs, { explicitPort });
     return text(JSON.stringify(result, null, 2));
   } catch (err) {
-    return errorText(`Error: ${err.message}`);
+    return toolFailureText(err);
   }
 });
 

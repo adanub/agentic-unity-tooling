@@ -68,9 +68,14 @@ managed state mid-call. Both halves are built to ride this out, and changes must
 - **plugin**: `McpBridgeServer` is `[InitializeOnLoad]`; it `Stop()`s on `beforeAssemblyReload` and the static
   ctor restarts it on the next load. The compile *session* and captured compiler messages persist across the
   reload via `SessionState` (`ConsoleCommands.cs`).
-- **server**: `callWithRecovery` (`instances.js`) retries connection-level failures (`ECONNREFUSED` etc.) with
-  exponential backoff, **re-locating the editor by `projectPath`** if the reload moved it to a different port.
-  All routes must stay idempotent / harmlessly re-runnable because retried calls re-execute on the bridge.
+- **server**: `callUnity` (`instances.js`) unifies target resolution and the call in **one retry loop** —
+  every attempt re-resolves (explicit port → pinned project identity → persisted selection → discovery) and
+  then calls, with exponential backoff (~43s budget). This matters because the bridge port is dark for the
+  *entire* reload: a resolution step outside the loop fails instantly on calls that land in that window
+  (the original two-layer design's exact bug). Resolution never deletes the persisted selection on a missed
+  ping — only budget exhaustion clears it. Multi-call chains (compile request→status) pass `pinnedPath` so
+  the chain can't split across editors mid-reload. All routes must stay idempotent / harmlessly re-runnable
+  because retried calls re-execute on the bridge.
 
 The `compile/request` trigger uses `AssetDatabase.Refresh()` deferred onto `EditorApplication.update`
 (deliberately **not** `delayCall`, which an unfocused editor can defer indefinitely) so it works with the
