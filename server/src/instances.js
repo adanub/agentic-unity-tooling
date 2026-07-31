@@ -89,6 +89,39 @@ export async function selectInstance(port) {
   };
 }
 
+/**
+ * Resolve a project query (case-insensitive substring of the project path or name) to a live
+ * instance. Ports shuffle between editors across restarts and domain reloads, so a project
+ * identity is the stable way to target one. A couple of short retries ride out an editor whose
+ * bridge is dark mid-reload at the moment of the query.
+ */
+export async function resolveProjectIdentity(query) {
+  const q = String(query).toLowerCase();
+  let matches = [];
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const instances = await discoverInstances();
+    matches = instances.filter(
+      (i) =>
+        (i.projectPath || "").toLowerCase().includes(q) ||
+        (i.projectName || "").toLowerCase().includes(q)
+    );
+    if (matches.length === 1) return { instance: matches[0] };
+    if (matches.length > 1) {
+      return {
+        error:
+          `Project query '${query}' matches ${matches.length} editors — be more specific:\n` +
+          describeInstances(matches),
+      };
+    }
+    await sleep(750 * (attempt + 1));
+  }
+  return {
+    error:
+      `No running editor matches project '${query}' (bridges may be mid-reload — ` +
+      `retried 3 scans). Use unity_list_instances to see what's running.`,
+  };
+}
+
 /** Thrown when several live editors are found and nothing disambiguates between them. */
 export class InstanceSelectionRequired extends Error {
   constructor(instances) {

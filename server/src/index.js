@@ -15,6 +15,7 @@ import {
 import {
   discoverInstances,
   selectInstance,
+  resolveProjectIdentity,
   describeInstances,
   callUnity,
   InstanceSelectionRequired,
@@ -710,25 +711,44 @@ const INSTANCE_TOOLS = [
   {
     name: "unity_select_instance",
     description:
-      "Select which Unity editor subsequent tool calls target, by port. Get the port " +
-      "from unity_list_instances. The selection persists until changed.",
+      "Select which Unity editor subsequent tool calls target, by project or by port. Prefer " +
+      "'project' (a substring of the project path or name) — ports shuffle between editors " +
+      "across restarts and domain reloads, so a port remembered from earlier can silently " +
+      "point at a different editor. The selection persists until changed and follows the " +
+      "project if its port moves.",
     inputSchema: {
       type: "object",
       properties: {
+        project: {
+          type: "string",
+          description:
+            "Target editor by project identity: a case-insensitive substring of its project " +
+            "path or name (from unity_list_instances). Must match exactly one running editor.",
+        },
         port: { type: "number", description: "Target editor's bridge port (e.g. 7890)." },
       },
-      required: ["port"],
     },
   },
 ];
 
-// Optional per-call routing override injected into every forwarding tool's schema.
+// Optional per-call routing overrides injected into every forwarding tool's schema.
 const PORT_PROP = {
   port: {
     type: "number",
     description:
       "Optional: target a specific Unity editor by bridge port (from unity_list_instances). " +
-      "Overrides the current selection — use when multiple editors are open.",
+      "Overrides the current selection. Ports shuffle between editors across restarts and " +
+      "domain reloads — when editors of different projects are open, prefer 'project'.",
+  },
+};
+const PROJECT_PROP = {
+  project: {
+    type: "string",
+    description:
+      "Optional: target a specific Unity editor by project identity — a case-insensitive " +
+      "substring of its project path or name (from unity_list_instances). Overrides the " +
+      "current selection and stays correct when domain reloads shuffle ports. Mutually " +
+      "exclusive with 'port'.",
   },
 };
 
@@ -753,6 +773,7 @@ const COMPILE_TOOL = {
     properties: {
       count: { type: "number", description: "Max compiler messages returned (default 50)." },
       port: PORT_PROP.port,
+      project: PROJECT_PROP.project,
     },
   },
   mutates: true,
@@ -776,7 +797,7 @@ if (process.argv.includes("--list-readonly-tools")) {
 }
 
 const server = new Server(
-  { name: "adanub-unity-mcp", version: "0.3.0" },
+  { name: "adanub-unity-mcp", version: "0.4.0" },
   { capabilities: { tools: {} } }
 );
 
@@ -789,7 +810,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       description,
       inputSchema: {
         ...inputSchema,
-        properties: { ...(inputSchema.properties || {}), ...PORT_PROP },
+        properties: { ...(inputSchema.properties || {}), ...PORT_PROP, ...PROJECT_PROP },
       },
     })),
   ],
@@ -804,9 +825,21 @@ const toolFailureText = (err) =>
     ? errorText(
         `Multiple Unity editors are open — select one before using this tool:\n` +
           `${describeInstances(err.instances)}\n\n` +
-          `Call unity_select_instance with the desired port (or pass port:<n> on the call).`
+          `Call unity_select_instance (prefer project:<substring>; ports shuffle across reloads), ` +
+          `or pass project:<substring> on the call.`
       )
     : errorText(`Error: ${err.message}`);
+
+// Per-call routing: a 'project' override resolves to the instance's current port PLUS its
+// project identity, so callUnity treats it like an explicit port (never mutating the saved
+// selection) while still following the project if a domain reload moves it to another port.
+async function resolveRouting(explicitPort, project) {
+  if (!project) return { explicitPort };
+  if (explicitPort) throw new Error("Pass either 'project' or 'port', not both.");
+  const resolved = await resolveProjectIdentity(project);
+  if (resolved.error) throw new Error(resolved.error);
+  return { explicitPort: resolved.instance.port, pinnedPath: resolved.instance.projectPath };
+}
 
 // Poll compile/status until it reports phase=finished. callUnity rides out the domain-reload
 // bridge drop (re-resolving the moved port); this loop additionally re-polls past the empty/non-finished
@@ -836,9 +869,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === "unity_select_instance") {
-    const port = args?.port;
-    if (!port) return errorText("unity_select_instance requires a 'port'.");
-    const res = await selectInstance(port);
+    const { port, project } = args ?? {};
+    if (!port && !project) return errorText("unity_select_instance requires a 'project' or a 'port'.");
+    if (port && project) return errorText("Pass either 'project' or 'port', not both.");
+    let targetPort = port;
+    if (project) {
+      const resolved = await resolveProjectIdentity(project);
+      if (resolved.error) return errorText(resolved.error);
+      targetPort = resolved.instance.port;
+    }
+    const res = await selectInstance(targetPort);
     if (res.error) return errorText(res.error);
     const s = res.selected;
     return text(`Selected ${s.projectName} on port ${s.port} (Unity ${s.unityVersion}).\n${s.projectPath}`);
@@ -846,10 +886,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   // ── Combined compile (locally orchestrated: request → poll → result) ──
   if (name === "unity_compile") {
-    const { port: explicitPort, count } = args ?? {};
+    const { port: explicitPort, project, count } = args ?? {};
     try {
-      const { projectPath } = await callUnity("compile/request", {}, { explicitPort });
-      const status = await waitForCompile({ explicitPort, pinnedPath: projectPath }, count);
+      const routing = await resolveRouting(explicitPort, project);
+      const { projectPath } = await callUnity("compile/request", {}, routing);
+      const status = await waitForCompile({ ...routing, pinnedPath: projectPath || routing.pinnedPath }, count);
       return text(JSON.stringify(status, null, 2));
     } catch (err) {
       return toolFailureText(err);
@@ -860,9 +901,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const tool = TOOLS_BY_NAME.get(name);
   if (!tool) return errorText(`Unknown tool: ${name}`);
 
-  const { port: explicitPort, ...routeArgs } = args ?? {};
+  const { port: explicitPort, project, ...routeArgs } = args ?? {};
   try {
-    const { result } = await callUnity(tool.route, routeArgs, { explicitPort });
+    const routing = await resolveRouting(explicitPort, project);
+    const { result } = await callUnity(tool.route, routeArgs, routing);
     return text(JSON.stringify(result, null, 2));
   } catch (err) {
     return toolFailureText(err);

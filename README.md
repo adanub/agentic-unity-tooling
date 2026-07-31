@@ -95,7 +95,15 @@ only thing that needs the restart.
 ## Multi-instance
 
 Open more than one editor and each binds its own port. `unity_list_instances` enumerates them;
-`unity_select_instance` (or a per-call `port`) targets one. A single editor auto-selects.
+`unity_select_instance` (or a per-call `port`/`project` override) targets one. A single editor
+auto-selects.
+
+Ports are not a stable identity: editors re-register across restarts and domain reloads and can
+swap ports with each other. Prefer targeting by **project** — `unity_select_instance` with
+`project: <substring of the project path or name>`, or the same `project` override on any call —
+which resolves against the live instances and keeps following the project when its port moves.
+A `port` override still works for one-off routing but can silently hit a different editor after
+a reload; `project` and `port` are mutually exclusive on a call.
 
 ## Version fragility
 
