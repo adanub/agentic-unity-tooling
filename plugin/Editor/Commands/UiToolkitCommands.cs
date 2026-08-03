@@ -1,10 +1,12 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Reflection;
 using System.Text;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
+using UnityEditorInternal;
 using UnityEngine;
 using UnityEngine.UIElements;
 
@@ -32,10 +34,11 @@ namespace Adanub.UnityMcp.Editor.Commands
 
         private static readonly string[] DefaultGroups = { "geometry", "box", "display", "text" };
 
-        // Reflection for a window's lock toggle is cached per type and may legitimately find
-        // nothing — most windows have no such concept.
-        private static readonly Dictionary<Type, PropertyInfo> LockProperties = new();
-        private static readonly Dictionary<Type, PropertyInfo> LabelProperties = new();
+        // Reflected members are cached per type, and each may legitimately find nothing — most
+        // windows have no lock toggle, and most elements no label.
+        private static readonly Dictionary<Type, FieldInfo> _rootFields = new();
+        private static readonly Dictionary<Type, PropertyInfo> _lockProperties = new();
+        private static readonly Dictionary<Type, PropertyInfo> _labelProperties = new();
 
         [McpRoute("uitk/windows", "Open EditorWindows and their UI Toolkit roots. Args: none.")]
         public static object Windows(JObject args)
@@ -118,7 +121,7 @@ namespace Adanub.UnityMcp.Editor.Commands
                     if (wanted.Length > 0 && !wanted.Contains(name)) continue;
                     try
                     {
-                        UnityEditorInternal.InternalEditorUtility.SetIsInspectorExpanded(target, expanded);
+                        InternalEditorUtility.SetIsInspectorExpanded(target, expanded);
                         touched.Add(name);
                     }
                     catch (Exception)
@@ -176,7 +179,20 @@ namespace Adanub.UnityMcp.Editor.Commands
             foreach (var window in windows)
             {
                 var root = SafeRoot(window);
-                if (root is null) continue;
+                if (root is null)
+                {
+                    // Said out loud rather than skipped: an empty answer for a window the caller
+                    // named reads exactly like "the tree did not contain what I searched for".
+                    sb.AppendLine($"WINDOW {window.GetType().Name} '{SafeTitle(window)}'" +
+                                  "  [no UI Toolkit root — an IMGUI window, or one that has not drawn yet]");
+                    dumped.Add(new Dictionary<string, object>
+                    {
+                        { "type", window.GetType().Name },
+                        { "hasRoot", false },
+                        { "matchedRoots", 0 },
+                    });
+                    continue;
+                }
 
                 var roots = selector is null ? new List<VisualElement> { root } : Match(root, selector);
                 sb.AppendLine($"WINDOW {window.GetType().Name} '{SafeTitle(window)}'" +
@@ -248,7 +264,7 @@ namespace Adanub.UnityMcp.Editor.Commands
                 string.Equals(w.GetType().Name, filter, StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(w.GetType().FullName, filter, StringComparison.OrdinalIgnoreCase)).ToList();
             if (matches.Count == 0)
-                matches = all.Where(w => w.GetType().Name.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0).ToList();
+                matches = all.Where(w => w.GetType().Name.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
             if (matches.Count == 0)
                 error = $"No open window matches '{filter}'. Open windows: " +
                         string.Join(", ", all.Select(w => w.GetType().Name).Distinct().OrderBy(n => n));
@@ -264,7 +280,7 @@ namespace Adanub.UnityMcp.Editor.Commands
         {
             var results = new List<VisualElement>();
             var byClass = selector.StartsWith(".", StringComparison.Ordinal);
-            var needle = byClass ? selector.Substring(1) : selector;
+            var needle = byClass ? selector[1..] : selector;
 
             void Recurse(VisualElement e)
             {
@@ -398,7 +414,7 @@ namespace Adanub.UnityMcp.Editor.Commands
         private static string LabelOf(VisualElement e)
         {
             var type = e.GetType();
-            if (!LabelProperties.TryGetValue(type, out var property))
+            if (!_labelProperties.TryGetValue(type, out var property))
             {
                 // BaseField<T> is generic, so its label cannot be reached by a type pattern; a
                 // cached property lookup covers every field type without naming any of them.
@@ -413,7 +429,7 @@ namespace Adanub.UnityMcp.Editor.Commands
                     property = null;
                 }
 
-                LabelProperties[type] = property;
+                _labelProperties[type] = property;
             }
 
             if (property is null) return null;
@@ -427,10 +443,10 @@ namespace Adanub.UnityMcp.Editor.Commands
             }
         }
 
-        private static bool? IsLocked(EditorWindow window)
+        internal static bool? IsLocked(EditorWindow window)
         {
             var type = window.GetType();
-            if (!LockProperties.TryGetValue(type, out var property))
+            if (!_lockProperties.TryGetValue(type, out var property))
             {
                 try
                 {
@@ -444,7 +460,7 @@ namespace Adanub.UnityMcp.Editor.Commands
                     property = null;
                 }
 
-                LockProperties[type] = property;
+                _lockProperties[type] = property;
             }
 
             if (property is null) return null;
@@ -458,15 +474,36 @@ namespace Adanub.UnityMcp.Editor.Commands
             }
         }
 
+        /// <summary>
+        /// The window's EXISTING UI Toolkit root, or null if it has not built one.
+        /// <para>
+        /// Deliberately not <c>EditorWindow.rootVisualElement</c>: that getter CREATES the root on
+        /// first access, and for windows supporting overlays it also initialises the overlay canvas.
+        /// Reading it across every open window — which listing does — would therefore build UI in
+        /// background tabs that had never drawn, i.e. change editor state from tools that report
+        /// themselves read-only, and would make a "does this window have a root" answer always yes.
+        /// </para>
+        /// </summary>
         private static VisualElement SafeRoot(EditorWindow window)
         {
+            var type = window.GetType();
+            if (!_rootFields.TryGetValue(type, out var field))
+            {
+                // Declared on EditorWindow itself, so walk up from the concrete window type.
+                for (var t = type; t is not null && field is null; t = t.BaseType)
+                    field = t.GetField("m_UIRootElement", BindingFlags.NonPublic | BindingFlags.Instance);
+                _rootFields[type] = field;
+            }
+
+            if (field is null)
+                return null;
             try
             {
-                return window.rootVisualElement;
+                return field.GetValue(window) as VisualElement;
             }
             catch (Exception)
             {
-                // A window mid-teardown, or one that never built a UI Toolkit root.
+                // A window mid-teardown; absence of a root is the honest answer.
                 return null;
             }
         }
@@ -483,13 +520,13 @@ namespace Adanub.UnityMcp.Editor.Commands
             }
         }
 
-        private static string F(float v) => v.ToString("F1", System.Globalization.CultureInfo.InvariantCulture);
+        private static string F(float v) => v.ToString("F1", CultureInfo.InvariantCulture);
 
         // Rounded, never truncated: truncating turns 0.345 into a value that disagrees with the
         // stylesheet it actually came from, and the phantom one-off sends the reader chasing it.
         private static string Col(Color c) =>
             $"#{Mathf.RoundToInt(c.r * 255):X2}{Mathf.RoundToInt(c.g * 255):X2}{Mathf.RoundToInt(c.b * 255):X2}" +
-            $"{(c.a < 1f ? $"a{c.a.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}" : "")}";
+            $"{(c.a < 1f ? $"a{c.a.ToString("F2", CultureInfo.InvariantCulture)}" : "")}";
 
         private static string InlineColour(StyleColor style) =>
             style.keyword == StyleKeyword.Undefined ? Col(style.value) : style.keyword.ToString();

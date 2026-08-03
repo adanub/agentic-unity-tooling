@@ -1,8 +1,13 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEngine;
+// This file works in UnityEngine.Object throughout; the alias keeps bare `Object` unambiguous
+// now that System is imported.
+using Object = UnityEngine.Object;
 
 namespace Adanub.UnityMcp.Editor.Commands
 {
@@ -69,6 +74,21 @@ namespace Adanub.UnityMcp.Editor.Commands
             "Set the editor selection to scene objects and/or project assets. Args: paths (string[] scene paths), instanceIds (int[]), assetPaths (string[] e.g. 'Assets/Foo.asset'), guids (string[]), ping (bool — also highlight the first in the Project window). Reports anything that did not resolve, and warns if an Inspector is locked.")]
         public static object Set(JObject args)
         {
+            // Guarded on ARRAY-ness, not key presence: every branch below reads `as JArray`, so a
+            // key holding a bare string or a JSON null would sail past a presence check and then
+            // silently clear the selection while reporting success — the exact "selected nothing" /
+            // "selected the wrong thing" ambiguity this route exists to remove. An empty array is a
+            // JArray, so clearing deliberately still works.
+            string[] selectorKeys = { "paths", "instanceIds", "assetPaths", "guids" };
+            if (selectorKeys.All(k => args[k] is not JArray))
+                return new
+                {
+                    error = "No selection specified. Pass paths, instanceIds, assetPaths or guids as ARRAYS; "
+                            + "pass an empty array to clear the selection deliberately.",
+                    received = selectorKeys.Where(k => args[k] is not null)
+                        .Select(k => $"{k}:{args[k].Type}").ToArray(),
+                };
+
             var objects = new List<Object>();
             // Every input that resolved to nothing is named back. "Selected 0" and "selected the
             // wrong thing" are indistinguishable to a caller that then inspects the selection, and
@@ -128,7 +148,7 @@ namespace Adanub.UnityMcp.Editor.Commands
                 ActiveEditorTracker.sharedTracker.ForceRebuild();
                 trackerRebuilt = true;
             }
-            catch (System.Exception)
+            catch (Exception)
             {
                 // Internal-API drift must not fail the selection itself; the caller is told.
             }
@@ -143,31 +163,39 @@ namespace Adanub.UnityMcp.Editor.Commands
             if (unresolved.Count > 0) result["unresolved"] = unresolved.ToArray();
             // A locked inspector keeps showing its pinned object, so a caller that selects an asset
             // and then dumps the inspector would measure something else entirely.
-            var locked = LockedInspectorCount();
-            if (locked > 0) result["warning"] = $"{locked} Inspector window(s) are LOCKED and will not follow this selection.";
+            var pinned = PinnedInspectors();
+            if (pinned.Length > 0)
+                result["warning"] = $"These inspector window(s) will NOT follow this selection: {string.Join(", ", pinned)}.";
             return result;
         }
 
-        private static int LockedInspectorCount()
+        /// <summary>
+        /// Inspector windows that will keep showing their current object regardless of the
+        /// selection: locked docked inspectors, and floating property editors, which are pinned to
+        /// one object by their nature and expose no lock flag at all. Dumping either after a
+        /// selection change measures a different object than the caller believes it selected.
+        /// </summary>
+        private static string[] PinnedInspectors()
         {
-            var count = 0;
+            var pinned = new List<string>();
             foreach (var window in Resources.FindObjectsOfTypeAll<EditorWindow>())
             {
-                if (window == null || window.GetType().Name != "InspectorWindow") continue;
-                try
-                {
-                    var property = window.GetType().GetProperty("isLocked",
-                        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic |
-                        System.Reflection.BindingFlags.Instance);
-                    if (property?.PropertyType == typeof(bool) && (bool)property.GetValue(window)) count++;
-                }
-                catch (System.Exception)
-                {
-                    // Internal API drift: a missing lock flag must not fail the selection itself.
-                }
+                if (window == null) continue;
+                var name = window.GetType().Name;
+                // Exactly "PropertyEditor", not a subclass test: InspectorWindow derives from it,
+                // and a docked Inspector is not pinned. The floating Properties window IS this
+                // concrete type and is pinned to its object by construction.
+                if (name == "PropertyEditor")
+                    pinned.Add("PropertyEditor (floating, always pinned)");
+                // Restricted to inspectors before consulting the lock flag: other windows declare
+                // an `isLocked` of their own (ProjectBrowser does), and a locked Project window
+                // does not stop the Inspector following the selection.
+                // One owner for the lock policy — the dump reports the same flag.
+                else if (name == "InspectorWindow" && UiToolkitCommands.IsLocked(window) == true)
+                    pinned.Add($"{name} (locked)");
             }
 
-            return count;
+            return pinned.ToArray();
         }
 
         [McpRoute("selection/focus-scene-view", "Frame the scene-view camera on a GameObject (path/name/instanceId) or the current selection.")]

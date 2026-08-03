@@ -98,8 +98,8 @@ Then restart the MCP client and focus the Unity editor so it compiles the packag
   call**. Each of those three failure modes yields an empty or stale dump that is indistinguishable
   from a genuine finding, which is why they are tools rather than documentation.
 
-Four tools change editor state and are excluded from the default read-only allowlist (`console_clear`,
-`selection_set`, `selection_focus_scene_view`, `compile_request`). `node server/src/index.js
+Five tools change editor state and are excluded from the default read-only allowlist (`console_clear`,
+`selection_set`, `selection_focus_scene_view`, `compile_request`, `uitk_expand_inspector`). `node server/src/index.js
 --list-readonly-tools` emits the safe set.
 
 ## Extending (adding routes/tools)
