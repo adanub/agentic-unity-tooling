@@ -341,7 +341,27 @@ namespace Adanub.UnityMcp.Editor.Commands
         {
             var classes = string.Join(".", e.GetClasses());
             var name = string.IsNullOrEmpty(e.name) ? "" : $"#{e.name}";
-            return $"<{e.GetType().Name}{name}{(classes.Length == 0 ? "" : "." + classes)}>";
+            return $"<{e.GetType().Name}{name}{(classes.Length == 0 ? "" : "." + classes)}>{DrawModeNote(e)}";
+        }
+
+        /// <summary>
+        /// Flags subtrees drawn in IMMEDIATE mode, whose contents no visual-tree dump can reach.
+        /// <para>
+        /// An IMGUI control exists only during its OnGUI call — there is no retained element to
+        /// report — so such a subtree dumps as an empty or leaf element, which reads exactly like a
+        /// control that failed to draw. Unity labels each inspector element with the mode its editor
+        /// uses, so the distinction is stated rather than left to be inferred from a short dump.
+        /// </para>
+        /// </summary>
+        private static string DrawModeNote(VisualElement e)
+        {
+            if (e is IMGUIContainer)
+                return "  [IMGUI — immediate mode, nothing below is inspectable]";
+            if (e.ClassListContains("unity-inspector-element--imgui"))
+                return "  [IMGUI-drawn editor — its controls are not in the visual tree]";
+            if (e.ClassListContains("unity-inspector-element--uie"))
+                return "  [UI Toolkit editor]";
+            return "";
         }
 
         private static string Report(VisualElement e, string group)

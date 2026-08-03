@@ -81,7 +81,9 @@ Then restart the MCP client and focus the Unity editor so it compiles the packag
   painting the wrong thing is one nobody thought to look at. It walks the **hierarchy** — so a
   composite control's own chrome (a foldout's toggle, a field's label) is visible, which the public
   `Children()` enumeration hides — enumerates every child rather than a whitelist of expected
-  classes, and states plainly when it truncated. Pair with `unity_selection_set`'s
+  classes, states plainly when it truncated, and **annotates each inspector element as UI Toolkit
+  or IMGUI-drawn** — an immediate-mode editor has no retained controls to report, so its subtree
+  dumps as a leaf, which is indistinguishable from a control that failed to draw. Pair with `unity_selection_set`'s
   `assetPaths`/`guids` to put an asset in the Inspector first; that tool reports anything that did
   not resolve and warns when an Inspector is locked and so will not follow the selection.
   `unity_uitk_repaint` and `unity_uitk_expand_inspector` close the loop, and both exist because a
