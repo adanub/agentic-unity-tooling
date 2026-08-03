@@ -116,11 +116,29 @@ namespace Adanub.UnityMcp.Editor.Commands
             if (objects.Count > 0 && args.Value<bool?>("ping") == true)
                 EditorGUIUtility.PingObject(objects[0]);
 
+            // Setting the selection is not enough for the Inspector to show it. The window rebuilds
+            // its editor list from the active tracker when it next handles a selection change, and
+            // an editor running unfocused may not get there — leaving the Inspector displaying the
+            // PREVIOUS object while the selection genuinely is the new one. Rebuilding the tracker
+            // here is what a real click does, and without it a following dump measures the wrong
+            // object while every other signal says the selection succeeded.
+            var trackerRebuilt = false;
+            try
+            {
+                ActiveEditorTracker.sharedTracker.ForceRebuild();
+                trackerRebuilt = true;
+            }
+            catch (System.Exception)
+            {
+                // Internal-API drift must not fail the selection itself; the caller is told.
+            }
+
             var result = new Dictionary<string, object>
             {
                 { "success", unresolved.Count == 0 },
                 { "selectedCount", objects.Count },
                 { "selected", objects.Select(o => o.name).ToArray() },
+                { "inspectorTrackerRebuilt", trackerRebuilt },
             };
             if (unresolved.Count > 0) result["unresolved"] = unresolved.ToArray();
             // A locked inspector keeps showing its pinned object, so a caller that selects an asset

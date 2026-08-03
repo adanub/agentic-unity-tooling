@@ -356,6 +356,20 @@ const TOOLS = [
     route: "uitk/repaint",
   },
   {
+    name: "unity_uitk_expand_inspector",
+    description:
+      "Expand or collapse the Inspector's component foldouts for the current selection so their contents are actually built. A collapsed component builds no inspector content, so dumping it reports nothing — indistinguishable from a component whose fields failed to draw. Use before unity_uitk_dump when inspecting components on a GameObject or prefab.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        expanded: { type: "boolean", description: "Expand (default true) or collapse." },
+        types: { type: "array", items: { type: "string" }, description: "Component type names to affect. Default: all on the selection." },
+      },
+    },
+    route: "uitk/expand-inspector",
+    mutates: true,
+  },
+  {
     name: "unity_uitk_dump",
     description:
       "Dump an editor window's UI Toolkit visual tree as numbers: per element the type, full class list, geometry, box metrics, display/visibility/opacity, resolved AND inline colours, text/label, and background image. The tool for editor-UI work where a screenshot cannot answer the question — whether an element owns a property inline or a stylesheet still drives it, what a zero-height element's box computed to, or which unexpected element is actually painting. Enumerates every child (never a class whitelist) and reports truncation explicitly.",

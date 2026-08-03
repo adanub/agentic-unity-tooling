@@ -84,10 +84,19 @@ Then restart the MCP client and focus the Unity editor so it compiles the packag
   classes, and states plainly when it truncated. Pair with `unity_selection_set`'s
   `assetPaths`/`guids` to put an asset in the Inspector first; that tool reports anything that did
   not resolve and warns when an Inspector is locked and so will not follow the selection.
-  `unity_uitk_repaint` closes the loop: a retained tree only rebuilds when its window *draws*, and
-  an unfocused editor has no reason to redraw after a programmatic selection change — so the full
-  sequence is **select → repaint → (next call) dump**. Without the repaint the dump reports the
-  previous selection's tree, or an empty one, which is indistinguishable from a real finding.
+  `unity_uitk_repaint` and `unity_uitk_expand_inspector` close the loop, and both exist because a
+  dump is only as good as what has actually been built:
+  - a retained tree rebuilds only when its window *draws*, and an unfocused editor has no reason to
+    redraw after a programmatic selection change;
+  - the Inspector rebuilds its editor list from the active tracker, which `unity_selection_set` now
+    forces — without it the window keeps showing the PREVIOUS object while the selection genuinely
+    is the new one;
+  - a collapsed component builds no inspector content at all, so dumping one reports nothing, which
+    looks exactly like a component whose fields failed to draw.
+
+  The full sequence is **select → expand (if inspecting components) → repaint → dump on a following
+  call**. Each of those three failure modes yields an empty or stale dump that is indistinguishable
+  from a genuine finding, which is why they are tools rather than documentation.
 
 Four tools change editor state and are excluded from the default read-only allowlist (`console_clear`,
 `selection_set`, `selection_focus_scene_view`, `compile_request`). `node server/src/index.js

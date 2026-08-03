@@ -93,6 +93,61 @@ namespace Adanub.UnityMcp.Editor.Commands
             };
         }
 
+        [McpRoute("uitk/expand-inspector",
+            "Expand (or collapse) the Inspector's component foldouts for the current selection, so their contents are actually built and can be dumped. Args: expanded (bool, default true), types (string[] of component type names; default all).")]
+        public static object ExpandInspector(JObject args)
+        {
+            // A collapsed component builds no inspector content at all, so a dump of it reports
+            // nothing — which looks identical to a component whose fields failed to draw.
+            var expanded = args.Value<bool?>("expanded") ?? true;
+            var wanted = args["types"] is JArray a
+                ? a.Select(t => t.ToString()).ToArray()
+                : Array.Empty<string>();
+
+            var touched = new List<string>();
+            foreach (var obj in Selection.objects)
+            {
+                if (obj == null) continue;
+                var targets = obj is GameObject go
+                    ? go.GetComponents<Component>().Cast<UnityEngine.Object>()
+                    : new[] { obj };
+                foreach (var target in targets)
+                {
+                    if (target == null) continue;
+                    var name = target.GetType().Name;
+                    if (wanted.Length > 0 && !wanted.Contains(name)) continue;
+                    try
+                    {
+                        UnityEditorInternal.InternalEditorUtility.SetIsInspectorExpanded(target, expanded);
+                        touched.Add(name);
+                    }
+                    catch (Exception)
+                    {
+                        // Not every object supports the expansion flag; skip rather than fail.
+                    }
+                }
+            }
+
+            if (touched.Count > 0)
+            {
+                try
+                {
+                    ActiveEditorTracker.sharedTracker.ForceRebuild();
+                }
+                catch (Exception)
+                {
+                    // Rebuild is best-effort; the caller still repaints before dumping.
+                }
+            }
+
+            return new Dictionary<string, object>
+            {
+                { "expanded", expanded },
+                { "affected", touched.ToArray() },
+                { "note", "Repaint, then dump on a following call." },
+            };
+        }
+
         [McpRoute("uitk/dump",
             "Dump an editor window's UI Toolkit visual tree with resolved + inline style. Args: window (type name, default focused; '*' for all), selector ('.class' or 'TypeName' to root the dump, optional), properties (string[] of geometry|box|display|colour|text|image), maxDepth (12), maxElements (400), includeHidden (true).")]
         public static object Dump(JObject args)
