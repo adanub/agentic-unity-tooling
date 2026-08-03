@@ -72,6 +72,18 @@ Then restart the MCP client and focus the Unity editor so it compiles the packag
   properties, mesh/material/texture/renderer info, lighting summary, texture import settings.
 - **Project config**: tags/layers, physics collision matrix, assembly definitions, sprite atlases,
   input actions, packages, scene-view camera, editor/player prefs.
+- **Editor UI (UI Toolkit)**: `unity_uitk_windows` lists open `EditorWindow`s with their UI Toolkit
+  roots, lock and focus state; `unity_uitk_dump` dumps a window's visual tree as numbers — per
+  element the type, full class list, geometry, box metrics, display/visibility/opacity, resolved
+  **and inline** colours, text/label, and background image. This is the counterpart to a screenshot
+  for editor-UI work: a screenshot cannot show whether an element owns a property inline or a
+  stylesheet still drives it, what a zero-height element's box computed to, or that the element
+  painting the wrong thing is one nobody thought to look at. It walks the **hierarchy** — so a
+  composite control's own chrome (a foldout's toggle, a field's label) is visible, which the public
+  `Children()` enumeration hides — enumerates every child rather than a whitelist of expected
+  classes, and states plainly when it truncated. Pair with `unity_selection_set`'s
+  `assetPaths`/`guids` to put an asset in the Inspector first; that tool reports anything that did
+  not resolve and warns when an Inspector is locked and so will not follow the selection.
 
 Four tools change editor state and are excluded from the default read-only allowlist (`console_clear`,
 `selection_set`, `selection_focus_scene_view`, `compile_request`). `node server/src/index.js

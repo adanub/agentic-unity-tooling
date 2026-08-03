@@ -300,12 +300,20 @@ const TOOLS = [
   },
   {
     name: "unity_selection_set",
-    description: "Set the editor selection (changes editor state).",
+    description:
+      "Set the editor selection to scene objects and/or project assets (changes editor state). Selecting an asset makes the Inspector show it, which is the usual setup step before unity_uitk_dump. Reports anything that failed to resolve, and warns when an Inspector is locked and so will not follow the selection.",
     inputSchema: {
       type: "object",
       properties: {
-        paths: { type: "array", items: { type: "string" }, description: "GameObject paths to select." },
+        paths: { type: "array", items: { type: "string" }, description: "Scene GameObject hierarchy paths to select." },
         instanceIds: { type: "array", items: { type: "number" }, description: "Instance ids to select." },
+        assetPaths: {
+          type: "array",
+          items: { type: "string" },
+          description: "Project asset paths to select, e.g. 'Assets/Data/Thing.asset'.",
+        },
+        guids: { type: "array", items: { type: "string" }, description: "Asset GUIDs to select." },
+        ping: { type: "boolean", description: "Also highlight the first selected object in the Project window." },
       },
     },
     route: "selection/set",
@@ -324,6 +332,42 @@ const TOOLS = [
     },
     route: "selection/focus-scene-view",
     mutates: true,
+  },
+
+  // ── UI Toolkit (editor UI) ──
+  {
+    name: "unity_uitk_windows",
+    description:
+      "Open EditorWindows, their UI Toolkit root child counts, and whether each is locked/focused. Use to find the window type name for unity_uitk_dump.",
+    inputSchema: { type: "object", properties: {} },
+    route: "uitk/windows",
+  },
+  {
+    name: "unity_uitk_dump",
+    description:
+      "Dump an editor window's UI Toolkit visual tree as numbers: per element the type, full class list, geometry, box metrics, display/visibility/opacity, resolved AND inline colours, text/label, and background image. The tool for editor-UI work where a screenshot cannot answer the question — whether an element owns a property inline or a stylesheet still drives it, what a zero-height element's box computed to, or which unexpected element is actually painting. Enumerates every child (never a class whitelist) and reports truncation explicitly.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        window: {
+          type: "string",
+          description: "EditorWindow type name, e.g. 'InspectorWindow'. Default: the focused window. '*' for all.",
+        },
+        selector: {
+          type: "string",
+          description: "Root the dump at matching elements: '.uss-class' by class, otherwise an element type name. Every match is dumped.",
+        },
+        properties: {
+          type: "array",
+          items: { type: "string", enum: ["geometry", "box", "display", "colour", "text", "image"] },
+          description: "Property groups to report. Default: geometry, box, display, text. Add 'colour' for tint/stylesheet-ownership questions, 'image' for icons.",
+        },
+        maxDepth: { type: "number", description: "Max tree depth (default 12). Truncation is reported." },
+        maxElements: { type: "number", description: "Max elements emitted (default 400). Truncation is reported." },
+        includeHidden: { type: "boolean", description: "Include display:None elements (default true — a hidden element is often the finding)." },
+      },
+    },
+    route: "uitk/dump",
   },
 
   // ── GameObject / component inspection ──
