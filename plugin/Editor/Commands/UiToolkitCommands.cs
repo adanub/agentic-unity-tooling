@@ -60,6 +60,39 @@ namespace Adanub.UnityMcp.Editor.Commands
             return new Dictionary<string, object> { { "count", list.Count }, { "windows", list } };
         }
 
+        [McpRoute("uitk/repaint",
+            "Ask editor windows to redraw, so a retained UI Toolkit tree rebuilds before it is dumped. Args: window (type name, default all). Call this after changing the selection, then dump on a following call — the redraw happens on a later editor frame, not within this one.")]
+        public static object Repaint(JObject args)
+        {
+            // A window's visual tree is only rebuilt when the window draws. An editor running
+            // unfocused has no reason to redraw after a programmatic selection change, so a dump
+            // taken straight afterwards reports the PREVIOUS selection's tree — or an empty one —
+            // which reads exactly like a genuine finding.
+            var windows = ResolveWindows(args.Value<string>("window") ?? "*", out var error);
+            if (error is not null)
+                return new { error };
+
+            var repainted = new List<string>();
+            foreach (var window in windows)
+            {
+                try
+                {
+                    window.Repaint();
+                    repainted.Add(window.GetType().Name);
+                }
+                catch (Exception)
+                {
+                    // A window mid-teardown cannot repaint; that is not a failure of the request.
+                }
+            }
+
+            return new Dictionary<string, object>
+            {
+                { "repainted", repainted.ToArray() },
+                { "note", "Redraw lands on a later editor frame — dump on a following call, not this one." },
+            };
+        }
+
         [McpRoute("uitk/dump",
             "Dump an editor window's UI Toolkit visual tree with resolved + inline style. Args: window (type name, default focused; '*' for all), selector ('.class' or 'TypeName' to root the dump, optional), properties (string[] of geometry|box|display|colour|text|image), maxDepth (12), maxElements (400), includeHidden (true).")]
         public static object Dump(JObject args)

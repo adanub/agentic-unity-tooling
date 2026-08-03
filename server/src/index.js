@@ -344,6 +344,18 @@ const TOOLS = [
     route: "uitk/windows",
   },
   {
+    name: "unity_uitk_repaint",
+    description:
+      "Ask editor windows to redraw so their retained UI Toolkit trees rebuild. Call after unity_selection_set, then unity_uitk_dump on a FOLLOWING call — an unfocused editor does not redraw on its own, so a dump taken without this reports the previous selection's tree (or an empty one), which is indistinguishable from a real finding.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        window: { type: "string", description: "EditorWindow type name. Default: all windows." },
+      },
+    },
+    route: "uitk/repaint",
+  },
+  {
     name: "unity_uitk_dump",
     description:
       "Dump an editor window's UI Toolkit visual tree as numbers: per element the type, full class list, geometry, box metrics, display/visibility/opacity, resolved AND inline colours, text/label, and background image. The tool for editor-UI work where a screenshot cannot answer the question — whether an element owns a property inline or a stylesheet still drives it, what a zero-height element's box computed to, or which unexpected element is actually painting. Enumerates every child (never a class whitelist) and reports truncation explicitly.",

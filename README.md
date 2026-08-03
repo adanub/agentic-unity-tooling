@@ -84,6 +84,10 @@ Then restart the MCP client and focus the Unity editor so it compiles the packag
   classes, and states plainly when it truncated. Pair with `unity_selection_set`'s
   `assetPaths`/`guids` to put an asset in the Inspector first; that tool reports anything that did
   not resolve and warns when an Inspector is locked and so will not follow the selection.
+  `unity_uitk_repaint` closes the loop: a retained tree only rebuilds when its window *draws*, and
+  an unfocused editor has no reason to redraw after a programmatic selection change — so the full
+  sequence is **select → repaint → (next call) dump**. Without the repaint the dump reports the
+  previous selection's tree, or an empty one, which is indistinguishable from a real finding.
 
 Four tools change editor state and are excluded from the default read-only allowlist (`console_clear`,
 `selection_set`, `selection_focus_scene_view`, `compile_request`). `node server/src/index.js
