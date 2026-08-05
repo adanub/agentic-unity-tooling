@@ -370,6 +370,32 @@ const TOOLS = [
     mutates: true,
   },
   {
+    name: "unity_uitk_set_foldout",
+    description:
+      "Expand or collapse Foldouts INSIDE a window's visual tree — a group, a list, a nested block. unity_uitk_expand_inspector cannot reach these; it toggles component headers only. Needed because a collapsed subtree reports zero geometry and zeroed margins (the numbers come from a layout that never ran), so nothing about expanded content is measurable until something opens it. Reports which foldouts it touched, and says so explicitly when none matched.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        window: {
+          type: "string",
+          description: "EditorWindow type name, e.g. 'InspectorWindow'. Default: the focused window. '*' for all.",
+        },
+        selector: {
+          type: "string",
+          description: "'.uss-class' or a TypeName to limit the search to matching subtrees. Default: the whole window.",
+        },
+        text: {
+          type: "string",
+          description: "Case-insensitive substring of the foldout's header text, to target one by name.",
+        },
+        expanded: { type: "boolean", description: "Expand (default true) or collapse." },
+        limit: { type: "number", description: "Max foldouts to touch (default 50); reports truncation." },
+      },
+    },
+    route: "uitk/set-foldout",
+    mutates: true,
+  },
+  {
     name: "unity_uitk_dump",
     description:
       "Dump an editor window's UI Toolkit visual tree as numbers: per element the type, full class list, geometry, box metrics, display/visibility/opacity, resolved AND inline colours, text/label, and background image. The tool for editor-UI work where a screenshot cannot answer the question — whether an element owns a property inline or a stylesheet still drives it, what a zero-height element's box computed to, or which unexpected element is actually painting. Enumerates every child (never a class whitelist) and reports truncation explicitly.",

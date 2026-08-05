@@ -151,6 +151,68 @@ namespace Adanub.UnityMcp.Editor.Commands
             };
         }
 
+        [McpRoute("uitk/set-foldout",
+            "Expand (or collapse) Foldouts INSIDE a window's visual tree — a group, list or nested block. uitk/expand-inspector cannot reach these: it toggles component headers only. Args: window (type name, default focused; '*' for all), selector ('.class' or 'TypeName' to limit the search, optional), text (case-insensitive substring of the foldout's header, optional), expanded (bool, default true), limit (max foldouts to touch, default 50).")]
+        public static object SetFoldout(JObject args)
+        {
+            // A collapsed foldout's subtree reports zero geometry with zeroed margins, because those
+            // numbers come from a layout that never ran. So anything about EXPANDED content is
+            // unmeasurable until something opens it, and expand-inspector only reaches component
+            // headers.
+            var windowFilter = args.Value<string>("window");
+            var selector = args.Value<string>("selector");
+            var text = args.Value<string>("text");
+            var expanded = args.Value<bool?>("expanded") ?? true;
+            var limit = args.Value<int?>("limit") ?? 50;
+
+            var windows = ResolveWindows(windowFilter, out var resolveError);
+            if (resolveError is not null)
+                return new { error = resolveError };
+
+            var touched = new List<string>();
+            var truncated = false;
+            foreach (var window in windows)
+            {
+                var root = SafeRoot(window);
+                if (root is null)
+                    continue;
+                var scopes = selector is null ? new List<VisualElement> { root } : Match(root, selector);
+                foreach (var scope in scopes)
+                {
+                    foreach (var element in Match(scope, nameof(Foldout)))
+                    {
+                        if (element is not Foldout foldout)
+                            continue;
+                        if (text is not null && (foldout.text is null ||
+                                                 foldout.text.IndexOf(text, StringComparison.OrdinalIgnoreCase) < 0))
+                            continue;
+                        if (touched.Count >= limit)
+                        {
+                            truncated = true;
+                            break;
+                        }
+
+                        foldout.value = expanded;
+                        touched.Add(foldout.text ?? "(untitled)");
+                    }
+                }
+            }
+
+            return new Dictionary<string, object>
+            {
+                { "expanded", expanded },
+                { "count", touched.Count },
+                { "touched", touched.ToArray() },
+                { "truncated", truncated },
+                // Zero matches gets its own message: it reads exactly like a dump of an element that
+                // failed to draw, and the usual cause is a subtree the window has not built yet
+                // rather than a wrong selector.
+                { "note", touched.Count == 0
+                    ? "No foldout matched. Check the selector/text against a uitk/dump — and note a tree only contains what the window has already built."
+                    : "Expansion relayouts on a later editor frame — repaint, then dump on a following call." },
+            };
+        }
+
         [McpRoute("uitk/dump",
             "Dump an editor window's UI Toolkit visual tree with resolved + inline style. Args: window (type name, default focused; '*' for all), selector ('.class' or 'TypeName' to root the dump, optional), properties (string[] of geometry|box|display|colour|text|image), maxDepth (12), maxElements (400), includeHidden (true).")]
         public static object Dump(JObject args)
