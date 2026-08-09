@@ -156,11 +156,26 @@ namespace Adanub.UnityMcp.Editor.Commands
                 case SerializedPropertyType.ObjectReference:
                 {
                     var o = p.objectReferenceValue;
-                    if (o == null) return null;
+                    if (o == null)
+                    {
+                        // Distinguish a genuinely-empty slot (null) from a BROKEN reference —
+                        // destroyed target, missing script, or a type-mismatched/scene reference
+                        // inside a prefab asset: the raw id stays non-zero when serialised data
+                        // holds a reference that cannot resolve to a live object of the field's
+                        // type. Rendering both as null hides exactly the states worth finding.
+                        return p.objectReferenceInstanceIDValue != 0
+                            ? new Dictionary<string, object>
+                            {
+                                { "missing", true },
+                                { "instanceId", p.objectReferenceInstanceIDValue },
+                            }
+                            : null;
+                    }
                     return new Dictionary<string, object>
                     {
                         { "name", o.name },
                         { "type", o.GetType().Name },
+                        { "instanceId", o.GetInstanceID() },
                         { "assetPath", AssetDatabase.GetAssetPath(o) },
                     };
                 }
