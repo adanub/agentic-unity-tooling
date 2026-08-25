@@ -7,8 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `agentic-unity-tooling` is a standalone, **publishable, project-agnostic** MCP toolset (package id
 `com.adanub.unity-mcp`, MIT) for **observing and inspecting a running Unity Editor** from an AI agent:
 console logs, compilation errors, profiler/memory data, and scene/asset/prefab/project state. It is
-read-focused by design — the *only* write paths are a script-compile trigger and three small editor-state
-tools (console clear, selection set, scene-view focus).
+read-focused by design — the *only* write paths are a script-compile trigger and four small editor-state
+tools (console clear, selection set, scene-view focus, profiler record on/off).
 
 **Keep this repo 100% generic.** It is vendored into private projects but is meant to be reused and
 published on its own. Do **not** introduce names of any specific consuming project, game, or company into
@@ -120,9 +120,9 @@ Only the MCP-level tool registration (the `TOOLS` entry) needs the client restar
 
 ## Mutating tools and the allowlist
 
-Four tools change editor state and carry `mutates: true` in `server/src/index.js`: `unity_console_clear`,
-`unity_selection_set`, `unity_selection_focus_scene_view`, `unity_compile_request` (plus the orchestrated
-`unity_compile`). `--list-readonly-tools` emits everything *except* these as
+Five tools change editor state and carry `mutates: true` in `server/src/index.js`: `unity_console_clear`,
+`unity_selection_set`, `unity_selection_focus_scene_view`, `unity_profiler_record`, `unity_compile_request`
+(plus the orchestrated `unity_compile`). `--list-readonly-tools` emits everything *except* these as
 `mcp__adanub-unity-mcp__<name>` permission strings — consuming projects use that to auto-generate their
 read-only allowlist instead of hand-maintaining it. When adding a state-changing tool, set `mutates: true`
 so it's excluded from the safe set.

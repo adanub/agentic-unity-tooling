@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text.RegularExpressions;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEditor.Profiling;
@@ -10,9 +11,10 @@ using Profiler = UnityEngine.Profiling.Profiler;
 namespace Adanub.UnityMcp.Editor.Commands
 {
     /// <summary>
-    /// Read-only profiler queries. These never enable profiling or change editor state —
-    /// the user starts/stops recording manually (it is interruptive). When nothing is
-    /// recording, the frame-based routes return a clear explanatory message instead of failing.
+    /// Profiler queries, read-only except <c>profiler/record</c> — the one route that changes
+    /// state, and only the Profiler's own recording toggle (marked mutating on the server side).
+    /// When nothing is recording, the frame-based routes return a clear explanatory message
+    /// instead of failing.
     /// </summary>
     public static class ProfilerCommands
     {
@@ -77,20 +79,59 @@ namespace Adanub.UnityMcp.Editor.Commands
             };
         }
 
-        [McpRoute("profiler/frame-data", "CPU timing hierarchy for a captured frame. Args: frameIndex (default latest), maxItems (30), minTimeMs (0), threadIndex (0=main). Requires the Profiler to be recording.")]
+        [McpRoute("profiler/record", "Start or stop Profiler recording (ProfilerDriver.enabled). Args: enabled (bool, required), clear (bool, drop the captured frames first), deepProfiling (bool, toggles Deep Profile — changing it triggers a script recompile). Returns the resulting state and frame range.")]
+        public static object Record(JObject args)
+        {
+            var enabled = args.Value<bool?>("enabled");
+            if (enabled is null)
+                return new { error = "'enabled' (bool) is required." };
+
+            var notes = new List<string>();
+            if (args.Value<bool?>("clear") ?? false)
+                ProfilerDriver.ClearAllFrames();
+
+            var deep = args.Value<bool?>("deepProfiling");
+            if (deep.HasValue && ProfilerDriver.deepProfiling != deep.Value)
+            {
+                ProfilerDriver.deepProfiling = deep.Value;
+                notes.Add("Deep Profile changed — Unity recompiles scripts (domain reload) before it takes effect.");
+            }
+
+            ProfilerDriver.enabled = enabled.Value;
+            if (enabled.Value && !EditorApplication.isPlaying && !ProfilerDriver.profileEditor)
+                notes.Add("Not in Play mode and 'Profile Editor' is off — no frames will be captured until Play starts.");
+
+            var result = new Dictionary<string, object>
+            {
+                { "enabled", ProfilerDriver.enabled },
+                { "deepProfiling", ProfilerDriver.deepProfiling },
+                { "profileEditor", ProfilerDriver.profileEditor },
+                { "isPlaying", EditorApplication.isPlaying },
+                { "firstFrame", ProfilerDriver.firstFrameIndex },
+                { "lastFrame", ProfilerDriver.lastFrameIndex },
+            };
+            if (notes.Count > 0)
+                result["notes"] = notes;
+            return result;
+        }
+
+        [McpRoute("profiler/frame-data", "CPU timing hierarchy for a captured frame. Args: frameIndex (default latest), maxItems (30), minTimeMs (0), threadIndex (0=main), maxDepth (3), match + regex (find samples by name anywhere in the tree, each reported with its ancestor path). Requires the Profiler to be recording.")]
         public static object FrameData(JObject args)
         {
-            if (!ProfilerDriver.enabled)
-                return new { error = "Profiler is not recording. Open Window > Analysis > Profiler and enable Record, then retry." };
-
+            // Captured frames outlive both play mode and the recording toggle — reading them after
+            // play has exited (or with Record off) is the NORMAL way to inspect a frame, so the only
+            // precondition is that frames exist.
             int last = ProfilerDriver.lastFrameIndex;
             if (last < 0)
-                return new { error = "No profiler frames have been captured yet (let the profiler record a few frames)." };
+                return new { error = "No profiler frames have been captured. Start recording (profiler/record enabled=true) and run the scene, then retry." };
 
             int frameIndex = args.Value<int?>("frameIndex") ?? last;
             int maxItems = args.Value<int?>("maxItems") ?? 30;
             float minTimeMs = args.Value<float?>("minTimeMs") ?? 0f;
             int threadIndex = args.Value<int?>("threadIndex") ?? 0;
+            int maxDepth = args.Value<int?>("maxDepth") ?? 3;
+            string match = args.Value<string>("match");
+            bool useRegex = args.Value<bool?>("regex") ?? false;
 
             if (frameIndex < ProfilerDriver.firstFrameIndex || frameIndex > ProfilerDriver.lastFrameIndex)
                 return new
@@ -109,9 +150,8 @@ namespace Adanub.UnityMcp.Editor.Commands
                 var items = new List<Dictionary<string, object>>();
                 var children = new List<int>();
                 view.GetItemChildren(view.GetRootItemID(), children);
-                CollectHierarchy(view, children, items, maxItems, minTimeMs, 0, 3);
 
-                return new Dictionary<string, object>
+                var result = new Dictionary<string, object>
                 {
                     { "frameIndex", frameIndex },
                     { "threadName", view.threadName },
@@ -119,11 +159,44 @@ namespace Adanub.UnityMcp.Editor.Commands
                     { "frameGpuMs", Math.Round(view.frameGpuTimeMs, 3) },
                     { "frameFps", Math.Round(view.frameFps, 1) },
                     { "sampleCount", view.sampleCount },
-                    { "itemCount", items.Count },
-                    { "items", items },
                     { "firstFrame", ProfilerDriver.firstFrameIndex },
                     { "lastFrame", ProfilerDriver.lastFrameIndex },
+                    { "recording", ProfilerDriver.enabled },
                 };
+
+                if (!string.IsNullOrEmpty(match))
+                {
+                    // A name search walks the WHOLE tree: the samples worth finding (a custom
+                    // ProfilerMarker inside the render loop) sit far below any sensible depth cap,
+                    // and a depth-capped miss is indistinguishable from the marker not firing.
+                    Func<string, bool> predicate;
+                    try
+                    {
+                        predicate = useRegex
+                            ? new Func<string, bool>(new Regex(match, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant).IsMatch)
+                            : n => n.IndexOf(match, StringComparison.OrdinalIgnoreCase) >= 0;
+                    }
+                    catch (ArgumentException ex)
+                    {
+                        return new { error = "Invalid regex '" + match + "': " + ex.Message };
+                    }
+
+                    var path = new List<string>();
+                    int scanned = 0;
+                    bool truncated = CollectMatches(view, children, items, maxItems, predicate, path, ref scanned);
+                    result["match"] = match;
+                    result["scannedSamples"] = scanned;
+                    result["truncated"] = truncated;
+                }
+                else
+                {
+                    CollectHierarchy(view, children, items, maxItems, minTimeMs, 0, maxDepth);
+                    result["maxDepth"] = maxDepth;
+                }
+
+                result["itemCount"] = items.Count;
+                result["items"] = items;
+                return result;
             }
         }
 
@@ -256,6 +329,45 @@ namespace Adanub.UnityMcp.Editor.Commands
                     CollectHierarchy(view, kids, output, maxItems, minTimeMs, depth + 1, maxDepth);
                 }
             }
+        }
+
+        // Depth-first over every sample; a hit carries its ancestor chain so the SAME marker under two
+        // cameras (or two call sites) stays attributable. Returns true when maxItems cut the walk short.
+        private static bool CollectMatches(HierarchyFrameDataView view, List<int> ids,
+            List<Dictionary<string, object>> output, int maxItems, Func<string, bool> predicate,
+            List<string> path, ref int scanned)
+        {
+            foreach (int id in ids)
+            {
+                if (output.Count >= maxItems)
+                    return true;
+                scanned++;
+                string name = view.GetItemName(id);
+                if (predicate(name))
+                {
+                    output.Add(new Dictionary<string, object>
+                    {
+                        { "name", name },
+                        { "depth", path.Count },
+                        { "path", string.Join(" / ", path) },
+                        { "totalMs", Math.Round(view.GetItemColumnDataAsFloat(id, HierarchyFrameDataView.columnTotalTime), 3) },
+                        { "selfMs", Math.Round(view.GetItemColumnDataAsFloat(id, HierarchyFrameDataView.columnSelfTime), 3) },
+                        { "calls", view.GetItemColumnData(id, HierarchyFrameDataView.columnCalls) },
+                        { "gcAlloc", view.GetItemColumnData(id, HierarchyFrameDataView.columnGcMemory) },
+                    });
+                }
+                if (view.HasItemChildren(id))
+                {
+                    var kids = new List<int>();
+                    view.GetItemChildren(id, kids);
+                    path.Add(name);
+                    bool cut = CollectMatches(view, kids, output, maxItems, predicate, path, ref scanned);
+                    path.RemoveAt(path.Count - 1);
+                    if (cut)
+                        return true;
+                }
+            }
+            return false;
         }
 
         private static void CollectHotspots(HierarchyFrameDataView view, List<int> ids,

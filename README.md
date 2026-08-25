@@ -58,7 +58,11 @@ Then restart the MCP client and focus the Unity editor so it compiles the packag
 
 - **Observe**: console log (collapses per-frame spam with counts; reads Unity's own Console store),
   compilation errors (survive domain reload), editor/project/scene state, profiler stats/memory/
-  frame-data/analyze, asset memory breakdown + top consumers.
+  frame-data/analyze, asset memory breakdown + top consumers. `unity_profiler_frame_data` walks the
+  CPU hierarchy to a chosen `maxDepth`, or with `match` finds samples by name anywhere in the tree
+  (each hit with its ancestor path) — how a custom `ProfilerMarker` deep in the render loop is read.
+  `unity_profiler_record` starts/stops recording (and can clear frames or toggle Deep Profile), so a
+  measurement needs no hand on the Profiler window.
 - **Compile**: `unity_compile_request` triggers `AssetDatabase.Refresh()` so the editor picks up
   script edits made on disk — deferred onto `EditorApplication.update` (NOT `delayCall`, which an
   unfocused editor can defer indefinitely), so it works with the editor in the background.

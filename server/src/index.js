@@ -148,9 +148,30 @@ const TOOLS = [
         maxItems: { type: "number", description: "Max hierarchy rows (default 30)." },
         minTimeMs: { type: "number", description: "Drop entries below this total ms (default 0)." },
         threadIndex: { type: "number", description: "Thread index (default 0 = main)." },
+        maxDepth: { type: "number", description: "Hierarchy depth to walk (default 3). Ignored when 'match' is given." },
+        match: { type: "string", description: "Find samples by name ANYWHERE in the tree (case-insensitive substring, or regex with 'regex'); each hit reports its ancestor path. The way to read a custom ProfilerMarker buried in the render loop." },
+        regex: { type: "boolean", description: "Treat 'match' as a regex (default false)." },
       },
     },
     route: "profiler/frame-data",
+  },
+  {
+    name: "unity_profiler_record",
+    description:
+      "Start or stop Profiler recording (ProfilerDriver.enabled) so frame data can be read without the " +
+      "user touching the Profiler window. Optionally clears captured frames first or toggles Deep Profile " +
+      "(which triggers a script recompile). Returns the resulting state and frame range.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        enabled: { type: "boolean", description: "true = record, false = stop." },
+        clear: { type: "boolean", description: "Drop the captured frames before applying (default false)." },
+        deepProfiling: { type: "boolean", description: "Set Deep Profile on/off. Changing it makes Unity recompile scripts." },
+      },
+      required: ["enabled"],
+    },
+    route: "profiler/record",
+    mutates: true,
   },
   {
     name: "unity_profiler_analyze",
