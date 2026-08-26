@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using System.Text.RegularExpressions;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
@@ -97,7 +98,7 @@ namespace Adanub.UnityMcp.Editor.Commands
                 notes.Add("Deep Profile changed — Unity recompiles scripts (domain reload) before it takes effect.");
             }
 
-            ProfilerDriver.enabled = enabled.Value;
+            SetRecording(enabled.Value, notes);
             if (enabled.Value && !EditorApplication.isPlaying && !ProfilerDriver.profileEditor)
                 notes.Add("Not in Play mode and 'Profile Editor' is off — no frames will be captured until Play starts.");
 
@@ -113,6 +114,52 @@ namespace Adanub.UnityMcp.Editor.Commands
             if (notes.Count > 0)
                 result["notes"] = notes;
             return result;
+        }
+
+        // The Profiler WINDOW owns the Record toggle: it re-imposes its own m_Recording onto
+        // ProfilerDriver.enabled in OnEnable and OnFocus and clears it in OnDestroy (decompiled
+        // 6000.3), so a driver-level change made behind an open window is undone the next time the
+        // window is touched — and with NO window at all, a driver-only arm produced no frames
+        // across a whole play session (observed; the window is the supported owner of recording).
+        // So recording goes through a window's own (internal) SetRecordingEnabled — opening a
+        // Profiler window, unfocused, when enabling with none open. Only a failed lookup falls back
+        // to the driver flag, mirrored into the SessionState key a window reads when opened.
+        private static void SetRecording(bool enabled, List<string> notes)
+        {
+            var windowType = typeof(EditorWindow).Assembly.GetType("UnityEditor.ProfilerWindow");
+            var windows = windowType != null
+                ? Resources.FindObjectsOfTypeAll(windowType)
+                : Array.Empty<UnityEngine.Object>();
+            if (windows.Length == 0 && enabled && windowType != null)
+            {
+                // utility: false, title: null (the window names itself), focus: false — the user's
+                // focus is not taken by a background measurement.
+                var opened = EditorWindow.GetWindow(windowType, false, null, false);
+                if (opened != null)
+                {
+                    windows = new UnityEngine.Object[] { opened };
+                    notes.Add("Opened a Profiler window — recording needs one to own it.");
+                }
+            }
+            if (windows.Length > 0)
+            {
+                var setter = windowType.GetMethod("SetRecordingEnabled",
+                    BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public, null,
+                    new[] { typeof(bool) }, null);
+                if (setter != null)
+                {
+                    foreach (var window in windows)
+                        setter.Invoke(window, new object[] { enabled });
+                    notes.Add($"Applied through {windows.Length} open Profiler window(s), which own the Record toggle.");
+                    return;
+                }
+                notes.Add("A Profiler window is open but UnityEditor.ProfilerWindow.SetRecordingEnabled(bool) was not " +
+                          "found (Unity version drift — update plugin/Editor/Commands/ProfilerCommands.cs); the driver " +
+                          "flag was set directly and the window may override it when focused.");
+            }
+
+            ProfilerDriver.enabled = enabled;
+            SessionState.SetBool("ProfilerEnabled", enabled);
         }
 
         [McpRoute("profiler/frame-data", "CPU timing hierarchy for a captured frame. Args: frameIndex (default latest), maxItems (30), minTimeMs (0), threadIndex (0=main), maxDepth (3), match + regex (find samples by name anywhere in the tree, each reported with its ancestor path). Requires the Profiler to be recording.")]
