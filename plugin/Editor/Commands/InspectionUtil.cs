@@ -113,8 +113,28 @@ namespace Adanub.UnityMcp.Editor.Commands
             return dict;
         }
 
+        /// <summary>Elements of an array or list shown before the rest is summarised as a count.</summary>
+        private const int ArrayPreview = 4;
+
         public static object SerialiseProperty(SerializedProperty p)
         {
+            // An array or list is its SIZE and its first few elements, not an opaque "<Generic>":
+            // a renderer's bones, a material list or a bake's slice table are what an inspection
+            // is usually after, and the count alone answers "is it bound at all".
+            if (p.isArray && p.propertyType != SerializedPropertyType.String)
+            {
+                var size = p.arraySize;
+                var preview = new List<object>(Math.Min(size, ArrayPreview));
+                for (var i = 0; i < size && i < ArrayPreview; i++)
+                    preview.Add(SerialiseProperty(p.GetArrayElementAtIndex(i)));
+                return new Dictionary<string, object>
+                {
+                    { "count", size },
+                    { "first", preview },
+                    { "truncated", size > ArrayPreview },
+                };
+            }
+
             switch (p.propertyType)
             {
                 case SerializedPropertyType.Integer: return p.intValue;
