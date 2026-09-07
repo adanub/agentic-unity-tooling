@@ -186,7 +186,9 @@ const TOOLS = [
     description:
       "Enable the editor's Frame Debugger on the Game view (shows the Game view tab; pauses play mode if playing) and wait " +
       "until the frame's events are in. Returns eventCount and eventsHash. Then read unity_framedebugger_events; call " +
-      "unity_framedebugger_disable when done (it unpauses if enable paused).",
+      "unity_framedebugger_disable when done (it unpauses if enable paused). PRECONDITION: the Game view renders only while " +
+      "the editor application has OS focus — eventCount 0 after the wait means the editor is in the background, not a fault; " +
+      "ask the user to click the editor, then read events (the debugger stays enabled). This tool never takes focus.",
     inputSchema: {
       type: "object",
       properties: {
@@ -221,7 +223,8 @@ const TOOLS = [
       "Detail for chosen Frame Debugger events: shader, pass, light mode, keywords, mesh, index/instance/draw counts, the BATCH " +
       "BREAK CAUSE (why the draw did not join the previous batch), render target and depth/raster/blend state. The editor holds " +
       "this for one event at a time and needs a Game view re-render per event, so pass a short list (max 32). Restores the " +
-      "draw-call limit afterwards.",
+      "draw-call limit afterwards. Same precondition as enable: the re-render happens only while the editor application has " +
+      "OS focus; an index reported as 'no data' is the editor in the background.",
     inputSchema: {
       type: "object",
       properties: {
@@ -257,6 +260,21 @@ const TOOLS = [
       required: ["type"],
     },
     route: "window/show",
+    mutates: true,
+  },
+  {
+    name: "unity_window_close",
+    description:
+      "Close an open editor window by type name — the counterpart of unity_window_show, so a window opened for a measurement " +
+      "is not left in the user's layout. Closes every open instance of that type.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        type: { type: "string", description: "Window type name or full name." },
+      },
+      required: ["type"],
+    },
+    route: "window/close",
     mutates: true,
   },
   {
