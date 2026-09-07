@@ -63,6 +63,25 @@ Then restart the MCP client and focus the Unity editor so it compiles the packag
   (each hit with its ancestor path) — how a custom `ProfilerMarker` deep in the render loop is read.
   `unity_profiler_record` starts/stops recording (and can clear frames or toggle Deep Profile), so a
   measurement needs no hand on the Profiler window.
+- **Frame Debugger**: `unity_framedebugger_enable` enables the editor's Frame Debugger on the Game
+  view (pausing play mode if playing) and waits for the frame's events; `unity_framedebugger_events`
+  lists them — type (`SRPBatch`, `Mesh`, `SkinOnGPU`, `InstancedMesh`, ...), profiler-marker path,
+  drawn object — or, with `summary`, counts per marker path and type, so thousands of draws come
+  back as dozens of rows; `unity_framedebugger_event_data` reads the detail of a short list of
+  events (shader, pass, mesh, counts, render target, depth/raster/blend state and the **batch-break
+  cause** — why a draw did not join the previous batch); `unity_framedebugger_disable` undoes it.
+  Two preconditions the routes report rather than work around: the Game view renders **only while
+  the editor application has OS focus** (no bridge-side repaint request substitutes for it, and the
+  bridge never takes focus), and per-event detail exists for one event at a time, populated by a Game
+  view re-render at that event, so detail is sampled, never bulk. Do not open the editor's own Frame
+  Debugger window while the bridge has the debugger enabled — the window expects to enable it itself
+  and throws per repaint until it is closed.
+- **Editor control**: `unity_window_show` / `unity_window_close` (a window by type name; `focus` is
+  editor-tab focus only), `unity_gameview_info` (render size, selected size, VSync, target display —
+  the like-for-like conditions of a measurement), `unity_editor_playmode` (play / stop / pause /
+  unpause / step), `unity_scene_open` (refused while a loaded scene has unsaved changes it would
+  discard; never saves or discards for the user) and `unity_editor_menu_item` (a menu path; a
+  dialog it opens is left for the user). All but the two reads are `mutates: true`.
 - **Compile**: `unity_compile_request` triggers `AssetDatabase.Refresh()` so the editor picks up
   script edits made on disk — deferred onto `EditorApplication.update` (NOT `delayCall`, which an
   unfocused editor can defer indefinitely), so it works with the editor in the background.
@@ -155,10 +174,10 @@ info it already can through generic bash and grep commands. The compile trigger
 (`unity_compile_request`) is the one deliberate exception — it closes the edit → compile → errors
 feedback loop for an agent that edits scripts on disk, which is observability's missing half.
 
-The **frame debugger** - renderdoc already covers most relevant use cases better than the
-frame debugger does, see https://renderdoc.org/ and https://github.com/EdenLabs/agentic-renderdoc
-; its one unique use-case is per-draw *batch-break reasons*, which would be an easy reflection-only
-add if ever needed.
+The **frame debugger** was out of scope until per-draw *batch-break reasons* were needed — the one
+thing RenderDoc (https://renderdoc.org/, https://github.com/EdenLabs/agentic-renderdoc) cannot
+label. It is in now (`unity_framedebugger_*`, reflection over the editor's internal
+`FrameDebuggerUtility`); RenderDoc still covers GPU cost, pipeline state and pixel forensics better.
 
 The **test runner**, and **package registry search**. These two would need results collected
 across editor frames from async Unity APIs; the bridge's request-thread option (`RunOnRequestThread`,

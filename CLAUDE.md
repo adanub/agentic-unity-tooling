@@ -6,9 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `agentic-unity-tooling` is a standalone, **publishable, project-agnostic** MCP toolset (package id
 `com.adanub.unity-mcp`, MIT) for **observing and inspecting a running Unity Editor** from an AI agent:
-console logs, compilation errors, profiler/memory data, and scene/asset/prefab/project state. It is
-read-focused by design — the *only* write paths are a script-compile trigger and four small editor-state
-tools (console clear, selection set, scene-view focus, profiler record on/off).
+console logs, compilation errors, profiler/memory data, frame-debugger events, and
+scene/asset/prefab/project state. It is read-focused by design — the write paths are a script-compile
+trigger and a small set of editor-state controls (console clear, selection set, scene-view focus,
+profiler record on/off, frame debugger on/off, window show/close, play mode, scene open, menu item),
+each marked mutating; nothing edits a scene or an asset.
 
 **Keep this repo 100% generic.** It is vendored into private projects but is meant to be reused and
 published on its own. Do **not** introduce names of any specific consuming project, game, or company into
@@ -120,9 +122,11 @@ Only the MCP-level tool registration (the `TOOLS` entry) needs the client restar
 
 ## Mutating tools and the allowlist
 
-Five tools change editor state and carry `mutates: true` in `server/src/index.js`: `unity_console_clear`,
+Tools that change editor state carry `mutates: true` in `server/src/index.js`: `unity_console_clear`,
 `unity_selection_set`, `unity_selection_focus_scene_view`, `unity_profiler_record`, `unity_compile_request`
-(plus the orchestrated `unity_compile`). `--list-readonly-tools` emits everything *except* these as
+(plus the orchestrated `unity_compile`), the Frame Debugger's `enable` / `event_data` / `disable`,
+`unity_window_show` / `unity_window_close`, `unity_editor_playmode`, `unity_scene_open` and
+`unity_editor_menu_item`. `--list-readonly-tools` emits everything *except* these as
 `mcp__adanub-unity-mcp__<name>` permission strings — consuming projects use that to auto-generate their
 read-only allowlist instead of hand-maintaining it. When adding a state-changing tool, set `mutates: true`
 so it's excluded from the safe set.
@@ -156,7 +160,13 @@ hierarchy, asset/search lists) **must** support and honour bounding args (`maxNo
 
 ## Deliberately out of scope
 
-Scene/asset *mutation* tools (this is observability, not "AI builds your scene"); a frame debugger (external
-GPU capture tooling covers it better); the test runner and package-registry search (both need results
-collected across editor frames from async Unity APIs — the request-thread waiting half exists, but the
-cross-frame result plumbing does not). See `README.md` for the rationale before adding any of these.
+Scene/asset *mutation* tools (this is observability, not "AI builds your scene"); driving a window's
+controls (clicking buttons, setting fields — a deliberate decision for whoever needs it, not an
+inheritance); RenderDoc capture triggering (the trigger is one call, and everything that makes a capture
+worth analysing — scene, camera, controls, naming — is the user's); the test runner and package-registry
+search (both need results collected across editor frames from async Unity APIs — the request-thread
+waiting half exists, but the cross-frame result plumbing does not). See `README.md` for the rationale
+before adding any of these. The frame debugger WAS on this list until per-draw batch-break reasons were
+needed; `FrameDebuggerCommands.cs` is the reflection-only add the README anticipated, and its two
+preconditions (the editor application must have OS focus for the Game view to render; per-event detail
+is one re-render per event) are reported, never worked around.

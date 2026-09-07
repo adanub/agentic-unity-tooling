@@ -180,6 +180,142 @@ const TOOLS = [
     route: "profiler/analyze",
   },
 
+  // ── Frame Debugger ──
+  {
+    name: "unity_framedebugger_enable",
+    description:
+      "Enable the editor's Frame Debugger on the Game view (shows the Game view tab; pauses play mode if playing) and wait " +
+      "until the frame's events are in. Returns eventCount and eventsHash. Then read unity_framedebugger_events; call " +
+      "unity_framedebugger_disable when done (it unpauses if enable paused).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        waitMs: { type: "number", description: "How long to wait for the event list to settle (default 5000, max 25000)." },
+      },
+    },
+    route: "framedebugger/enable",
+    mutates: true,
+  },
+  {
+    name: "unity_framedebugger_events",
+    description:
+      "Events of the frame the Frame Debugger holds: index, type (SRPBatch, Mesh, SkinOnGPU, InstancedMesh, ...), profiler-marker " +
+      "path and drawn object name. A draw inside an SRPBatch event was SRP-batched; a Mesh/SkinOnGPU event was not. Use " +
+      "summary=true for counts per marker path + type (thousands of draws come back as dozens of rows).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        summary: { type: "boolean", description: "Counts per (marker path, type) instead of rows (default false)." },
+        match: { type: "string", description: "Only events whose marker path or object name contains this (or matches, with regex)." },
+        regex: { type: "boolean", description: "Treat 'match' as a case-insensitive regex (default false)." },
+        type: { type: "string", description: "Only events of this type name (e.g. Mesh, SRPBatch, SkinOnGPU)." },
+        offset: { type: "number", description: "Skip this many matched rows (default 0)." },
+        maxItems: { type: "number", description: "Max rows (default 200)." },
+      },
+    },
+    route: "framedebugger/events",
+  },
+  {
+    name: "unity_framedebugger_event_data",
+    description:
+      "Detail for chosen Frame Debugger events: shader, pass, light mode, keywords, mesh, index/instance/draw counts, the BATCH " +
+      "BREAK CAUSE (why the draw did not join the previous batch), render target and depth/raster/blend state. The editor holds " +
+      "this for one event at a time and needs a Game view re-render per event, so pass a short list (max 32). Restores the " +
+      "draw-call limit afterwards.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        indices: { type: "array", items: { type: "number" }, description: "Event indices from unity_framedebugger_events (max 32)." },
+        waitMs: { type: "number", description: "Wait per event for the re-render (default 2000, max 10000)." },
+      },
+      required: ["indices"],
+    },
+    route: "framedebugger/event-data",
+    mutates: true,
+  },
+  {
+    name: "unity_framedebugger_disable",
+    description: "Disable the Frame Debugger; unpauses play mode if unity_framedebugger_enable paused it.",
+    inputSchema: { type: "object", properties: {} },
+    route: "framedebugger/disable",
+    mutates: true,
+  },
+
+  // ── Windows and editor control ──
+  {
+    name: "unity_window_show",
+    description:
+      "Show an editor window by type name (GameView, SceneView, ProfilerWindow, FrameDebuggerWindow, or a project window type), " +
+      "opening it if needed. focus=false (default) brings the tab forward without taking keyboard focus. Editor tab focus only; " +
+      "never brings the editor process to the foreground.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        type: { type: "string", description: "Window type name or full name." },
+        focus: { type: "boolean", description: "Also take keyboard focus (default false)." },
+      },
+      required: ["type"],
+    },
+    route: "window/show",
+    mutates: true,
+  },
+  {
+    name: "unity_gameview_info",
+    description:
+      "Game view render settings — the like-for-like conditions of a measurement: target render size, selected size entry, " +
+      "VSync toggle, low-resolution-aspect mode, target display, window size; plus QualitySettings.vSyncCount and Screen size " +
+      "while playing.",
+    inputSchema: { type: "object", properties: {} },
+    route: "gameview/info",
+  },
+  {
+    name: "unity_editor_playmode",
+    description:
+      "Play-mode control: play (enter), stop (exit), pause, unpause, step (one frame while paused). Entering or leaving play " +
+      "takes effect on a later editor frame and can trigger a domain reload that drops the bridge briefly — poll " +
+      "unity_editor_state afterwards.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["play", "stop", "pause", "unpause", "step"], description: "What to do." },
+      },
+      required: ["action"],
+    },
+    route: "editor/playmode",
+    mutates: true,
+  },
+  {
+    name: "unity_scene_open",
+    description:
+      "Open a scene asset in edit mode ('single' replaces the open scenes, 'additive' adds). Refused, with the scenes named, when " +
+      "a loaded scene has unsaved changes that 'single' would discard — it never saves or discards for the user.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Scene asset path, e.g. Assets/Scenes/Foo.unity." },
+        mode: { type: "string", enum: ["single", "additive"], description: "Default single." },
+      },
+      required: ["path"],
+    },
+    route: "scene/open",
+    mutates: true,
+  },
+  {
+    name: "unity_editor_menu_item",
+    description:
+      "Execute an editor menu item by menu path (e.g. 'Assets/Reimport All'). Returns whether the editor found and ran it. " +
+      "An item that opens a dialog leaves the dialog for the user.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Menu path, case-sensitive, '/'-separated." },
+      },
+      required: ["path"],
+    },
+    route: "editor/menu-item",
+    mutates: true,
+  },
+
   // ── Memory (asset) ──
   {
     name: "unity_memory_status",
