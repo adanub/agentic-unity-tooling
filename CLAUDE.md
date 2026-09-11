@@ -161,7 +161,8 @@ What the routes are built around, each measured:
 ## Mutating tools and the allowlist
 
 Tools that change editor state carry `mutates: true` in `server/src/index.js`: `unity_console_clear`,
-`unity_selection_set`, `unity_selection_focus_scene_view`, `unity_profiler_record`, `unity_compile_request`
+`unity_selection_set`, `unity_selection_focus_scene_view`, `unity_uitk_expand_inspector`,
+`unity_uitk_set_foldout`, `unity_profiler_record`, `unity_compile_request`
 (plus the orchestrated `unity_compile`), the Frame Debugger's `enable` / `event_data` / `disable`,
 `unity_window_show` / `unity_window_close`, `unity_editor_playmode`, `unity_scene_open` and
 `unity_editor_menu_item`, and the memory snapshot capture (`unity_memory_snapshot`,
