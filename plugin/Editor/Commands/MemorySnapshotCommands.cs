@@ -223,4 +223,35 @@ namespace Adanub.UnityMcp.Editor.Commands
             }
         }
     }
+
+    /// <summary>
+    /// memory/snapshot-diff. Reading and comparing touch no Unity API, so it runs on the request thread and
+    /// a large pair never holds up the editor; this type holds no state whose initialiser touches Unity.
+    /// </summary>
+    public static class MemorySnapshotDiffRoute
+    {
+        [McpRoute("memory/snapshot-diff",
+            "Compare two finished snapshots of this process. Args: before, after (paths from memory/snapshot, absolute or " +
+            "project-relative), limit (rows per table, default 20, max 500). Reports totals; native objects by type, with the new ones " +
+            "named; native allocations and GPU resources by owning root ('area: object', or (unrooted)), with the new GPU resources " +
+            "listed; allocators by used size. Each table lists only what changed, largest change first, and says how many changed in " +
+            "all. Owners match by name; native objects and GPU resources by their IDs.",
+            RunOnRequestThread = true)]
+        public static object Diff(JObject args)
+        {
+            string before = args.Value<string>("before");
+            string after = args.Value<string>("after");
+            if (string.IsNullOrEmpty(before) || string.IsNullOrEmpty(after))
+                return new { error = "before and after are required (paths from memory/snapshot)." };
+            int limit = Math.Clamp(args.Value<int?>("limit") ?? 20, 1, 500);
+            try
+            {
+                return SnapshotDiff.Compare(SnapshotDiff.Read(Path.GetFullPath(before)), SnapshotDiff.Read(Path.GetFullPath(after)), limit);
+            }
+            catch (SnapshotFormatException ex)
+            {
+                return new { error = ex.Message };
+            }
+        }
+    }
 }

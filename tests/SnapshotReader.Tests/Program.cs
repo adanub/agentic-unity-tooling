@@ -28,12 +28,26 @@ namespace Adanub.UnityMcp.Snapshot.Tests
 
         private static int Main(string[] args)
         {
+            // diff <before.snap> <after.snap> [limit]: print the comparison of two real captures and stop.
+            if (args.Length > 0 && args[0] == "diff")
+            {
+                if (args.Length < 3)
+                {
+                    Console.WriteLine("usage: diff <before.snap> <after.snap> [limit]");
+                    return 2;
+                }
+                var comparison = SnapshotDiff.Compare(SnapshotDiff.Read(args[1]), SnapshotDiff.Read(args[2]), args.Length > 3 ? int.Parse(args[3]) : 20);
+                Console.WriteLine(JsonSerializer.Serialize(comparison, new JsonSerializerOptions { WriteIndented = true }));
+                return 0;
+            }
+
             string temp = Path.Combine(Path.GetTempPath(), "snapshot-reader-tests");
             Directory.CreateDirectory(temp);
             try
             {
                 SyntheticSnapshotReads(temp);
                 BrokenFilesFailPrecisely(temp);
+                SyntheticDiff(temp);
             }
             finally
             {
@@ -107,6 +121,105 @@ namespace Adanub.UnityMcp.Snapshot.Tests
                 File.WriteAllBytes(path, bytes);
             Check(Fails(() => SnapshotReader.Open(path).Dispose(), expected), $"a {name} file fails to open with '{expected}'");
         }
+
+        // ───────────────────────────── the diff ─────────────────────────────
+
+        // Before: a mesh and a texture, one rooted allocation and one unrooted, one GPU resource, two
+        // allocators. After adds: a 300-byte mesh and a 50-byte texture, a 1 MB unrooted allocation, an
+        // 8 KB GPU resource under a third root and a zero-size one, and 1 MB of persistent-allocator use.
+        private static SnapshotFixture DiffFixture(bool after)
+        {
+            var types = new List<int> { 0, 1 };
+            var ids = new List<int> { 1, 2 };
+            var names = new List<string> { "m", "t" };
+            var sizes = new List<ulong> { 100, 200 };
+            var objectRoots = new List<long> { 10, 11 };
+            var allocationRoots = new List<long> { 10, 0 };
+            var allocationSizes = new List<ulong> { 64, 32 };
+            var gfxIds = new List<ulong> { 1000 };
+            var gfxSizes = new List<ulong> { 4096 };
+            var gfxRoots = new List<long> { 11 };
+            ulong persistentUsed = 100;
+            if (after)
+            {
+                types.AddRange(new[] { 0, 1 });
+                ids.AddRange(new[] { 3, 4 });
+                names.AddRange(new[] { "m2", "t2" });
+                sizes.AddRange(new ulong[] { 300, 50 });
+                objectRoots.AddRange(new long[] { 10, 11 });
+                allocationRoots.Add(0);
+                allocationSizes.Add(1 << 20);
+                gfxIds.AddRange(new ulong[] { 1001, 1002 });
+                gfxSizes.AddRange(new ulong[] { 8192, 0 });
+                gfxRoots.AddRange(new long[] { 12, 12 });
+                persistentUsed += 1 << 20;
+            }
+
+            var fixture = new SnapshotFixture();
+            fixture.Single(SnapshotChapter.FormatVersion, BitConverter.GetBytes(17u));
+            fixture.Strings(SnapshotChapter.NativeTypeNames, "Mesh", "Texture2D");
+            fixture.Constant(SnapshotChapter.NativeObjectTypeIndices, sizeof(int), Bytes(types.ToArray()));
+            fixture.Constant(SnapshotChapter.NativeObjectInstanceIds, sizeof(int), Bytes(ids.ToArray()));
+            fixture.Strings(SnapshotChapter.NativeObjectNames, names.ToArray());
+            fixture.Constant(SnapshotChapter.NativeObjectSizes, sizeof(ulong), Bytes(sizes.ToArray()));
+            fixture.Constant(SnapshotChapter.NativeObjectRootIds, sizeof(long), Bytes(objectRoots.ToArray()));
+            fixture.Constant(SnapshotChapter.NativeRootIds, sizeof(long), Bytes(new long[] { 10, 11, 12 }));
+            fixture.Strings(SnapshotChapter.NativeRootAreaNames, "Objects", "Objects", "Graphics");
+            fixture.Strings(SnapshotChapter.NativeRootObjectNames, "m", "t", "buffers");
+            fixture.Constant(SnapshotChapter.NativeAllocationRootIds, sizeof(long), Bytes(allocationRoots.ToArray()));
+            fixture.Constant(SnapshotChapter.NativeAllocationSizes, sizeof(ulong), Bytes(allocationSizes.ToArray()));
+            fixture.Constant(SnapshotChapter.GraphicsResourceIds, sizeof(ulong), Bytes(gfxIds.ToArray()));
+            fixture.Constant(SnapshotChapter.GraphicsResourceSizes, sizeof(ulong), Bytes(gfxSizes.ToArray()));
+            fixture.Constant(SnapshotChapter.GraphicsResourceRootIds, sizeof(long), Bytes(gfxRoots.ToArray()));
+            fixture.Strings(SnapshotChapter.AllocatorNames, "ALLOC_DEFAULT", "ALLOC_PERSISTENT");
+            fixture.Constant(SnapshotChapter.AllocatorUsedSizes, sizeof(ulong), Bytes(new ulong[] { 1000, persistentUsed }));
+            fixture.Constant(SnapshotChapter.AllocatorReservedSizes, sizeof(ulong), Bytes(new ulong[] { 2000, 1 << 21 }));
+            fixture.Constant(SnapshotChapter.AllocatorAllocationCounts, sizeof(ulong), Bytes(new ulong[] { 0, 0 }));
+            return fixture;
+        }
+
+        private static void SyntheticDiff(string temp)
+        {
+            string beforePath = Path.Combine(temp, "diff-before.snap");
+            string afterPath = Path.Combine(temp, "diff-after.snap");
+            File.WriteAllBytes(beforePath, DiffFixture(false).Build());
+            File.WriteAllBytes(afterPath, DiffFixture(true).Build());
+            var before = SnapshotDiff.Read(beforePath);
+            var after = SnapshotDiff.Read(afterPath);
+            var result = SnapshotDiff.Compare(before, after, 20);
+
+            var byType = Rows(result, "objectsByType");
+            Check(byType.Count == 2 && (string)byType[0]["name"] == "Mesh" && (long)byType[0]["countDelta"] == 1 && (long)byType[0]["bytesDelta"] == 300
+                  && (string)byType[1]["name"] == "Texture2D" && (long)byType[1]["bytesDelta"] == 50,
+                "objects by type: both grown types, the larger change first");
+            var added = Rows(result, "newObjects");
+            Check(added.Count == 2 && (long)added[0]["instanceId"] == 3 && (string)added[0]["name"] == "m2" && (string)added[0]["type"] == "Mesh",
+                "new objects named by instance ID, the largest first");
+            var gpu = Rows(result, "gpuResourcesByRoot");
+            Check(gpu.Count == 1 && (string)gpu[0]["name"] == "Graphics: buffers" && (long)gpu[0]["countDelta"] == 1 && (long)gpu[0]["bytesDelta"] == 8192,
+                "GPU resources attributed to their owning root by name, the zero-size one left out");
+            var newGpu = Rows(result, "newGpuResources");
+            Check(newGpu.Count == 1 && (ulong)newGpu[0]["id"] == 1001UL && (string)newGpu[0]["root"] == "Graphics: buffers", "the new GPU resource listed with its root");
+            var allocations = Rows(result, "nativeAllocationsByRoot");
+            Check(allocations.Count == 1 && (string)allocations[0]["name"] == SnapshotDiff.Unrooted && (long)allocations[0]["bytesDelta"] == 1 << 20,
+                "the new unrooted allocation reported under (unrooted)");
+            var allocators = Rows(result, "allocators");
+            Check(allocators.Count == 1 && (string)allocators[0]["name"] == "ALLOC_PERSISTENT" && (long)allocators[0]["usedDelta"] == 1 << 20 && !allocators[0].ContainsKey("allocationsDelta"),
+                "the grown allocator reported, with no allocation delta when none are recorded");
+            Check(((Dictionary<string, object>)result["allocators"])["allocationCounts"] is string note && note.StartsWith("not recorded", StringComparison.Ordinal),
+                "the absence of allocation counts is said, not shown as zero");
+
+            var cut = (Dictionary<string, object>)SnapshotDiff.Compare(before, after, 1)["objectsByType"];
+            Check((int)cut["changed"] == 2 && (int)cut["shown"] == 1 && Rows(SnapshotDiff.Compare(before, after, 1), "objectsByType").Count == 1,
+                "a table cut to its limit says how many changed in all");
+            var same = SnapshotDiff.Compare(after, after, 20);
+            Check(Rows(same, "objectsByType").Count == 0 && Rows(same, "gpuResourcesByRoot").Count == 0 && Rows(same, "nativeAllocationsByRoot").Count == 0
+                  && Rows(same, "newObjects").Count == 0 && Rows(same, "allocators").Count == 0,
+                "a snapshot compared with itself changes nothing");
+        }
+
+        private static List<Dictionary<string, object>> Rows(Dictionary<string, object> result, string table) =>
+            (List<Dictionary<string, object>>)((Dictionary<string, object>)result[table])["rows"];
 
         // ───────────────────────────── a real capture ─────────────────────────────
 
