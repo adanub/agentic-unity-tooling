@@ -7,3 +7,7 @@ server/node_modules/
 Thumbs.db
 
 # Unity (the plugin/ folder is a UPM package — its .meta files ARE tracked)
+
+# .NET build output of the headless test projects (tests/ is outside the package, never imported)
+tests/**/bin/
+tests/**/obj/
