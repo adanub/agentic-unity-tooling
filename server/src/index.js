@@ -364,6 +364,62 @@ const TOOLS = [
     route: "memory/top-assets",
   },
 
+  // ── Memory snapshots ──
+  {
+    name: "unity_memory_snapshot_start",
+    description:
+      "Start a memory snapshot of this editor into <project>/MemoryCaptures and return its path at once (low level; " +
+      "unity_memory_snapshot captures and waits in one call). A name whose file exists or is being captured returns that " +
+      "capture instead of starting another. Default flags NativeObjects + NativeAllocations (about 45 MB for an editor, " +
+      "everything unity_memory_snapshot_diff reads); add ManagedObjects, NativeAllocationSites and NativeStackTraces for " +
+      "the Memory Profiler window's full set.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "File name without extension (default <product>_<timestamp>)." },
+        folder: { type: "string", description: "Absolute or project-relative folder (default MemoryCaptures)." },
+        flags: { type: "array", items: { type: "string" }, description: "CaptureFlags names (default NativeObjects, NativeAllocations)." },
+        collectGarbage: { type: "boolean", description: "Collect managed garbage before capturing (default true)." },
+      },
+    },
+    route: "memory/snapshot",
+    mutates: true,
+  },
+  {
+    name: "unity_memory_snapshot_status",
+    description:
+      "Whether the snapshot at a path is a finished capture: state missing | incomplete | complete | invalid, plus " +
+      "finished and failed. Reads only the file, so it answers across a domain reload.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "The capture's path (from unity_memory_snapshot or _start)." },
+        waitMs: { type: "number", description: "Long-poll up to this many ms for finished (0-25000, default 0)." },
+      },
+      required: ["path"],
+    },
+    route: "memory/snapshot-status",
+  },
+  {
+    name: "unity_memory_snapshot_diff",
+    description:
+      "Compare two finished snapshots of this process: totals; native objects by type, with the new ones named; native " +
+      "allocations and GPU resources by owning root ('area: object', or (unrooted)), with the new GPU resources listed; " +
+      "allocators by used size. Each table lists only what changed, largest first, cut to limit rows, and says how many " +
+      "changed. Take the 'after' capture a few frames after releasing anything: D3D12 frees a disposed GPU buffer late " +
+      "(it sits under 'Rendering: D3D12GfxDevice' until then). Compare owners, not IDs, across a domain reload.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        before: { type: "string", description: "Path of the earlier capture." },
+        after: { type: "string", description: "Path of the later capture." },
+        limit: { type: "number", description: "Rows per table (default 20, max 500)." },
+      },
+      required: ["before", "after"],
+    },
+    route: "memory/snapshot-diff",
+  },
+
   // ── Scene hierarchy & search ──
   {
     name: "unity_scene_hierarchy",
@@ -1054,6 +1110,54 @@ const COMPILE_TOOL = {
 // or never-finishing compile can't hang the call indefinitely (8 × 25s ≈ 200s worst case).
 const COMPILE_MAX_POLLS = 8;
 
+// ─── Combined snapshot capture (locally orchestrated: start → status until finished) ───
+// One call captures and waits. A name is always sent — generated here when the caller gives none — so a
+// start retried through a domain reload's bridge outage returns the same capture instead of starting a
+// second, and the path is known even when the start itself timed out on the main thread.
+const SNAPSHOT_TOOL = {
+  name: "unity_memory_snapshot",
+  description:
+    "Capture a memory snapshot of this editor into <project>/MemoryCaptures and wait until the file is a finished " +
+    "capture; returns its path and state. Default flags NativeObjects + NativeAllocations (about 45 MB for an editor, " +
+    "everything unity_memory_snapshot_diff reads); pass flags with ManagedObjects, NativeAllocationSites and " +
+    "NativeStackTraces added for the Memory Profiler window's full set. For a leak check, take the 'after' capture a " +
+    "few frames after releasing anything: D3D12 frees a disposed GPU buffer late.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      name: {
+        type: "string",
+        description: "File name without extension (default snapshot_<local timestamp>); an existing or running capture of that name is returned instead of a new one.",
+      },
+      folder: { type: "string", description: "Absolute or project-relative folder (default MemoryCaptures)." },
+      flags: { type: "array", items: { type: "string" }, description: "CaptureFlags names (default NativeObjects, NativeAllocations)." },
+      collectGarbage: { type: "boolean", description: "Collect managed garbage before capturing (default true)." },
+      port: PORT_PROP.port,
+      project: PROJECT_PROP.project,
+    },
+  },
+  mutates: true,
+};
+
+// Each status poll long-polls up to 25 s. A capture writes its file inside the start call, so the first poll
+// normally answers at once; the cap keeps a stuck capture from hanging the call.
+const SNAPSHOT_MAX_POLLS = 4;
+
+function snapshotName() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return `snapshot_${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
+}
+
+async function waitForSnapshot(path, opts) {
+  let last;
+  for (let i = 0; i < SNAPSHOT_MAX_POLLS; i++) {
+    ({ result: last } = await callUnity("memory/snapshot-status", { path, waitMs: 25000 }, opts));
+    if (last && (last.finished || last.error)) return last;
+  }
+  return { ...(last || {}), note: "The capture did not report finished within the poll budget; poll unity_memory_snapshot_status with this path." };
+}
+
 // ─── CLI: emit the read-only tool permission names (for the bootstrap allowlist) ───
 // `node src/index.js --list-readonly-tools` prints every non-mutating tool as a
 // Claude Code permission string, so the install can keep .claude/settings.json in
@@ -1076,6 +1180,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     ...INSTANCE_TOOLS,
     COMPILE_TOOL,
+    SNAPSHOT_TOOL,
     ...TOOLS.map(({ name, description, inputSchema }) => ({
       name,
       description,
@@ -1163,6 +1268,31 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { projectPath } = await callUnity("compile/request", {}, routing);
       const status = await waitForCompile({ ...routing, pinnedPath: projectPath || routing.pinnedPath }, count);
       return text(JSON.stringify(status, null, 2));
+    } catch (err) {
+      return toolFailureText(err);
+    }
+  }
+
+  // ── Combined snapshot capture (locally orchestrated: start → status until finished) ──
+  if (name === "unity_memory_snapshot") {
+    const { port: explicitPort, project, ...captureArgs } = args ?? {};
+    try {
+      const routing = await resolveRouting(explicitPort, project);
+      const request = { ...captureArgs, name: captureArgs.name || snapshotName() };
+      const { result: started, projectPath } = await callUnity("memory/snapshot", request, routing);
+      // A refused start (a bad name, a directory at the path) is final; a main-thread timeout may still be capturing.
+      const timedOut = typeof started?.error === "string" && /Timed out/.test(started.error);
+      if (started?.error && !timedOut) return errorText(`Error: ${started.error}`);
+      const path = started?.path || (!request.folder && projectPath ? `${projectPath}/MemoryCaptures/${request.name}.snap` : null);
+      if (!path) return errorText(`Error: ${started?.error ?? "the capture did not start"}`);
+      const status = await waitForSnapshot(path, { ...routing, pinnedPath: projectPath || routing.pinnedPath });
+      return text(
+        JSON.stringify(
+          { started: started?.started ?? null, startError: started?.error, flags: started?.flags, editorApplicationActive: started?.editorApplicationActive, ...status },
+          null,
+          2
+        )
+      );
     } catch (err) {
       return toolFailureText(err);
     }

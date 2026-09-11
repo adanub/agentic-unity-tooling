@@ -24,10 +24,10 @@ namespace Adanub.UnityMcp.Editor.Commands
         // what this captures.
         private const string DefaultFolder = "MemoryCaptures";
 
-        // The Memory Profiler window's default flags.
-        private const CaptureFlags DefaultFlags = CaptureFlags.ManagedObjects | CaptureFlags.NativeObjects |
-                                                  CaptureFlags.NativeAllocations | CaptureFlags.NativeAllocationSites |
-                                                  CaptureFlags.NativeStackTraces;
+        // Native objects and allocations: every chapter memory/snapshot-diff reads, in about 45 MB for an editor,
+        // where the Memory Profiler window's default set (adding the managed heap and allocation stack traces)
+        // runs to about 1.5 GB.
+        private const CaptureFlags DefaultFlags = CaptureFlags.NativeObjects | CaptureFlags.NativeAllocations;
 
         // Collection passes before an editor capture; see CollectGarbage.
         private const int MaxCollectionPasses = 6;
@@ -36,8 +36,9 @@ namespace Adanub.UnityMcp.Editor.Commands
             "Start a memory snapshot of this editor and return its path at once; then poll memory/snapshot-status (waitMs to long-poll) " +
             "until finished. Args: name (file name without extension; default <product>_<timestamp>; a name whose file exists or is being " +
             "captured returns that capture instead of starting another, so a retried call is harmless), folder (absolute or " +
-            "project-relative, default MemoryCaptures - the Memory Profiler package's folder), flags (CaptureFlags names, default the " +
-            "Memory Profiler window's: ManagedObjects, NativeObjects, NativeAllocations, NativeAllocationSites, NativeStackTraces), " +
+            "project-relative, default MemoryCaptures - the Memory Profiler package's folder), flags (CaptureFlags names, default " +
+            "NativeObjects, NativeAllocations - everything memory/snapshot-diff reads, about 45 MB for an editor; add ManagedObjects, " +
+            "NativeAllocationSites, NativeStackTraces for the Memory Profiler window's full set), " +
             "collectGarbage (default true: collect managed garbage first, as the Memory Profiler window does for an editor capture).")]
         public static object Start(JObject args)
         {

@@ -1,14 +1,16 @@
 # agentic-unity-tooling
 
 An MCP toolset for **observing and inspecting** a running Unity Editor from an AI agent —
-console logs, compilation errors, profiler/memory data, and scene/asset/prefab/project state —
-plus one deliberate write path: **triggering an asset refresh + script compile**, so an agent
-that edits scripts on disk gets compiler feedback without a human having to focus the editor.
+console logs, compilation errors, profiler/memory data, memory snapshots and their differences, and
+scene/asset/prefab/project state — plus a few deliberate write paths, chiefly **triggering an asset
+refresh + script compile**, so an agent that edits scripts on disk gets compiler feedback without a
+human having to focus the editor.
 Read-focused by design (not an "AI builds your scene" tool). Project-agnostic and reusable.
 
 Designed to be automatically setup by Claude Code with minimal user intervention needed.
 
-Package id `com.adanub.unity-mcp`. MIT-licensed. Clean-room implementation.
+Package id `com.adanub.unity-mcp`. MIT-licensed; see "Licence" for the one part written from another
+package's source.
 
 ## Architecture
 
@@ -88,6 +90,23 @@ Then restart the MCP client and focus the Unity editor so it compiles the packag
   `unity_compile_status` long-polls the session until `finished` with result
   `clean | errors | noCompile` plus the compiler messages. The session survives the clean-compile
   domain reload via `SessionState`; on errors there is no reload and results are immediate.
+- **Memory snapshots**: `unity_memory_snapshot` captures the editor (`MemoryProfiler.TakeSnapshot`)
+  into `<project>/MemoryCaptures` and waits until the file is a finished capture;
+  `unity_memory_snapshot_diff` compares two captures — totals, native objects by type with the new ones
+  named, native allocations and GPU resources by owning root, allocators — each table largest change
+  first and cut to a stated limit; `unity_memory_snapshot_start` / `unity_memory_snapshot_status` are
+  the low-level pair. The default flags (native objects and allocations) hold everything the diff reads
+  in about 45 MB for an editor, where the Memory Profiler window's full set runs to about 1.5 GB. The
+  file is a capture's only record, so a capture survives a domain reload with no job state. What the
+  tools are built around, each measured: `TakeSnapshot` captures inside the call and runs its finish
+  callback before returning, and a capture started inside that callback never completes and cancels
+  every later one until a domain reload; D3D12 keeps a disposed GPU buffer (under the root
+  `Rendering: D3D12GfxDevice`) until the GPU is done with it, so take the "after" capture a few frames
+  after a release; IDs change when a resource is recreated, so compare owners, not IDs, across a
+  domain reload. A GraphicsBuffer that was never bound still shows, under `Rendering: GraphicsBuffers`;
+  an editor capture records no per-allocator allocation counts. The reader and the diff
+  (`plugin/Editor/Snapshot/`) are engine-free and tested headless:
+  `dotnet run --project tests/SnapshotReader.Tests -- <capture.snap>`.
 - **Inspect**: scene hierarchy (bounded), search by name/component/tag/layer/shader, asset search,
   missing references, selection, GameObject + component properties, prefab info/hierarchy/
   variant overrides.
@@ -123,9 +142,8 @@ Then restart the MCP client and focus the Unity editor so it compiles the packag
   call**. Each of those three failure modes yields an empty or stale dump that is indistinguishable
   from a genuine finding, which is why they are tools rather than documentation.
 
-Five tools change editor state and are excluded from the default read-only allowlist (`console_clear`,
-`selection_set`, `selection_focus_scene_view`, `compile_request`, `uitk_expand_inspector`). `node server/src/index.js
---list-readonly-tools` emits the safe set.
+Tools that change editor state or write files carry `mutates: true` in `server/src/index.js` and are
+left out of the read-only allowlist; `node server/src/index.js --list-readonly-tools` emits the safe set.
 
 ## Extending (adding routes/tools)
 
@@ -182,8 +200,12 @@ label. It is in now (`unity_framedebugger_*`, reflection over the editor's inter
 The **test runner**, and **package registry search**. These two would need results collected
 across editor frames from async Unity APIs; the bridge's request-thread option (`RunOnRequestThread`,
 used by `compile/status` to long-poll main-thread snapshots) provides the waiting half of that, but
-the cross-frame result plumbing doesn't yet exist.
+the cross-frame result plumbing doesn't yet exist. Memory snapshots needed none: a capture's file is
+its record, so the status route reads the file and answers across a domain reload.
 
 ## Licence
 
-MIT — see `LICENSE`. Contains no third-party MCP/plugin code.
+MIT — see `LICENSE`. Contains no third-party MCP/plugin code. The memory snapshot reader
+(`plugin/Editor/Snapshot/`) was written from reading the Memory Profiler package's source
+(`com.unity.memoryprofiler`, under the Unity Companion License) for the snapshot file format: its
+layout and constants are adapted, and no code is copied.

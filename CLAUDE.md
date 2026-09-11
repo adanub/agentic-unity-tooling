@@ -9,7 +9,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 console logs, compilation errors, profiler/memory data, frame-debugger events, and
 scene/asset/prefab/project state. It is read-focused by design — the write paths are a script-compile
 trigger and a small set of editor-state controls (console clear, selection set, scene-view focus,
-profiler record on/off, frame debugger on/off, window show/close, play mode, scene open, menu item),
+profiler record on/off, frame debugger on/off, window show/close, play mode, scene open, menu item) and a memory snapshot capture (a file written into the
+project's `MemoryCaptures` folder),
 each marked mutating; nothing edits a scene or an asset.
 
 **Keep this repo 100% generic.** It is vendored into private projects but is meant to be reused and
@@ -104,7 +105,8 @@ node server/src/index.js
 node server/src/index.js --list-readonly-tools
 ```
 
-There is no test suite, linter, or plugin build step. The plugin compiles when a Unity editor with the
+There is no linter or plugin build step, and the one test project is `tests/SnapshotReader.Tests` (headless, for the
+engine-free snapshot code — see "Memory snapshots"). The plugin compiles when a Unity editor with the
 package loaded recompiles; verify plugin changes by watching for the bridge's startup log
 (`[Adanub MCP] Bridge started on http://127.0.0.1:789x/`) and exercising routes.
 
@@ -120,13 +122,50 @@ curl -s -X POST http://127.0.0.1:7890/api/your/route -d '{"arg": 1}'
 
 Only the MCP-level tool registration (the `TOOLS` entry) needs the client restart.
 
+## Memory snapshots
+
+`Commands/MemorySnapshotCommands.cs` holds three routes: `memory/snapshot` (main thread; starts a
+capture with `MemoryProfiler.TakeSnapshot` and returns its path), `memory/snapshot-status` and
+`memory/snapshot-diff` (request thread; they read files and touch no Unity API). The reading lives in
+`plugin/Editor/Snapshot/` and is **engine-free** — no Unity types — because
+`tests/SnapshotReader.Tests` compile-links it and runs headless, so a Unity type creeping in breaks
+that build. `dotnet run --project tests/SnapshotReader.Tests` runs the synthetic snapshots and broken
+files; add `-- <capture.snap> [editor-counts.json]` for a real capture, or `-- diff <before> <after>`.
+The synthetic writer shares the reader's model of the format, so only a real capture proves the model —
+the first real read caught its one mistake (an equal-size array's count is the LOW 32 bits of its
+chapter header's ulong).
+
+What the routes are built around, each measured:
+
+- **A capture's file is its only record.** The start route returns the path at once; the status route
+  reports finished when the file validates, so a capture survives a domain reload with no job state.
+- **`TakeSnapshot` captures inside the call and runs its finish callback before returning.** A capture
+  started inside that callback is accepted silently, never completes, and cancels every later capture
+  ("Canceling snapshot, there is another snapshot in progress.") until a domain reload. Never start one
+  from a callback; the routes never do.
+- **`TakeSnapshot` deletes an empty directory at its path** and writes the capture in its place, so the
+  start route refuses a path a directory holds.
+- **D3D12 frees a disposed GPU buffer late**: a capture in the tick of the release still holds it, under
+  the root `Rendering: D3D12GfxDevice`. A leak check captures a few frames later.
+- **Owners match by name, not ID**: resource and object IDs change when something is recreated (a domain
+  reload recreates render textures and large buffers), so the new-resource lists are noisy across a
+  reload while the by-root totals are not. Root IDs of 0 or less are unrooted and zero-size GPU resources
+  are skipped, as the Memory Profiler treats them. A never-bound GraphicsBuffer is a GPU resource under
+  `Rendering: GraphicsBuffers`; a Persistent NativeArray is an allocation under
+  `UnsafeUtility: Malloc(Persistent)`. An editor capture records no per-allocator allocation counts.
+- **The default flags are NativeObjects + NativeAllocations**: every chapter the diff reads, about 45 MB
+  for an editor, where the Memory Profiler window's default set (adding the managed heap and allocation
+  stack traces) runs to about 1.5 GB.
+- Unity 6.3 writes snapshot format version 17 (4-byte instance IDs; 8-byte from version 18).
+
 ## Mutating tools and the allowlist
 
 Tools that change editor state carry `mutates: true` in `server/src/index.js`: `unity_console_clear`,
 `unity_selection_set`, `unity_selection_focus_scene_view`, `unity_profiler_record`, `unity_compile_request`
 (plus the orchestrated `unity_compile`), the Frame Debugger's `enable` / `event_data` / `disable`,
 `unity_window_show` / `unity_window_close`, `unity_editor_playmode`, `unity_scene_open` and
-`unity_editor_menu_item`. `--list-readonly-tools` emits everything *except* these as
+`unity_editor_menu_item`, and the memory snapshot capture (`unity_memory_snapshot`,
+`unity_memory_snapshot_start`). `--list-readonly-tools` emits everything *except* these as
 `mcp__adanub-unity-mcp__<name>` permission strings — consuming projects use that to auto-generate their
 read-only allowlist instead of hand-maintaining it. When adding a state-changing tool, set `mutates: true`
 so it's excluded from the safe set.
@@ -155,7 +194,7 @@ hierarchy, asset/search lists) **must** support and honour bounding args (`maxNo
 - **JS (server)**: ESM, `unity_*` tool names, `route` strings matching the plugin's `[McpRoute]`. Keep
   `index.js` declarative — the `CallToolRequestSchema` handler is generic; don't add per-tool branches there
   (the only locally-handled, non-forwarding tools are instance management and the orchestrated
-  `unity_compile`).
+  `unity_compile` and `unity_memory_snapshot`).
 - The `plugin/` `.meta` files are **tracked** (it's a UPM package); don't gitignore them.
 
 ## Deliberately out of scope
@@ -165,7 +204,8 @@ controls (clicking buttons, setting fields — a deliberate decision for whoever
 inheritance); RenderDoc capture triggering (the trigger is one call, and everything that makes a capture
 worth analysing — scene, camera, controls, naming — is the user's); the test runner and package-registry
 search (both need results collected across editor frames from async Unity APIs — the request-thread
-waiting half exists, but the cross-frame result plumbing does not). See `README.md` for the rationale
+waiting half exists, but the cross-frame result plumbing does not; memory snapshots needed none, because a capture's
+file is its record). See `README.md` for the rationale
 before adding any of these. The frame debugger WAS on this list until per-draw batch-break reasons were
 needed; `FrameDebuggerCommands.cs` is the reflection-only add the README anticipated, and its two
 preconditions (the editor application must have OS focus for the Game view to render; per-event detail
