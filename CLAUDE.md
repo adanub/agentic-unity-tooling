@@ -61,7 +61,10 @@ The exception is `[McpRoute(..., RunOnRequestThread = true)]`: the handler runs 
 long-polling, e.g. `compile/status`) so the editor doesn't block on the wait. **Such handlers must NOT touch
 Unity APIs directly** — they call `RunOnMainThread` for each state snapshot, and must be declared on a type
 with **no static initialiser that touches Unity** (the type's static ctor runs on the request thread on first
-invocation). `CompileStatusRoute`/`ConsoleCommands` is the reference.
+invocation). `CompileStatusRoute`/`ConsoleCommands` is the reference. A route that must instead WAIT on an
+editor event (`PlayModeWaitRoute`) reads state kept in a separate holder type that the event writes under a
+lock and pulses; `McpBridgeServer`'s static ctor runs that holder's static ctor explicitly, on the main thread,
+before `Start()`, because `[InitializeOnLoad]` order within one assembly is unspecified.
 
 ### Domain-reload survival
 

@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.CompilerServices;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
@@ -61,6 +62,10 @@ namespace Adanub.UnityMcp.Editor
             EditorApplication.update += OnEditorUpdate;
             EditorApplication.quitting += Stop;
             AssemblyReloadEvents.beforeAssemblyReload += OnBeforeAssemblyReload;
+
+            // State a request-thread route reads must be built here, on the main thread, before the
+            // first request can arrive: [InitializeOnLoad] order within one assembly is unspecified.
+            RuntimeHelpers.RunClassConstructor(typeof(Commands.PlayModeTransitions).TypeHandle);
 
             // The static ctor runs on every domain load (including after a reload), so this
             // unconditionally (re)starts the bridge; beforeAssemblyReload stops it first.

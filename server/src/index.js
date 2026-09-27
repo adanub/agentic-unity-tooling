@@ -1160,15 +1160,17 @@ async function waitForSnapshot(path, opts) {
 }
 
 // Each wait blocks on the editor's play-mode event for up to 25 s; a domain reload drops the request and
-// callUnity re-resolves the editor, so the next wait answers from the reloaded state. This caps the total
-// (4 × 25 s) so a transition that never completes cannot hang the call.
+// callUnity re-resolves the editor, so the next wait answers from the reloaded state. A wait that ends
+// with the editor still where it started (no transition in progress) is final: the entry never began.
+// Waiting again is only for a transition still in progress, capped (4 × 25 s) so one that never
+// completes cannot hang the call.
 const PLAYMODE_MAX_WAITS = 4;
 
 async function waitForPlayMode(target, editEntries, opts) {
   let last;
   for (let i = 0; i < PLAYMODE_MAX_WAITS; i++) {
     ({ result: last } = await callUnity("editor/playmode-wait", { target, editEntries, waitMs: 25000 }, opts));
-    if (last && (last.settled || last.error || last.note?.startsWith("The play entry ended"))) return last;
+    if (!last || last.settled || last.error || last.ended || last.state !== "transitioning") return last;
   }
   return { ...(last || {}), note: "The play-mode transition did not complete within the wait budget." };
 }
@@ -1295,7 +1297,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const routing = await resolveRouting(explicitPort, project);
       const { result: requested, projectPath } = await callUnity("editor/playmode", { action }, routing);
       const target = action === "play" ? "play" : action === "stop" ? "edit" : null;
-      if (!target || requested?.error || requested?.note) return text(JSON.stringify(requested, null, 2));
+      // "Already in play mode" still waits: a play retried across a domain reload lands mid-entry.
+      if (!target || requested?.error) return text(JSON.stringify(requested, null, 2));
       const settled = await waitForPlayMode(target, target === "play" ? requested.editEntries : undefined, {
         ...routing,
         pinnedPath: projectPath || routing.pinnedPath,

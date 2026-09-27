@@ -10,12 +10,18 @@ namespace Adanub.UnityMcp.Editor.Commands
     /// The editor's play-mode state as <see cref="EditorApplication.playModeStateChanged"/> reports
     /// it, held where a request thread can WAIT on it: a waiter blocks on the lock's monitor and the
     /// event wakes it, so a transition is answered the moment it completes and nothing is polled.
-    /// Written only on the main thread (the static constructor and the event handler).
+    /// Written only on the main thread: the static constructor, which <see cref="McpBridgeServer"/>
+    /// runs explicitly before it starts listening (a request thread must never be the first to touch
+    /// this type), and the event handler.
     /// </summary>
     [InitializeOnLoad]
     internal static class PlayModeTransitions
     {
+        // SessionState survives a domain reload, so a domain loaded mid-session (a play entry's
+        // reload, a recompile while playing) resumes from what the previous domain heard.
         private const string EditEntriesKey = "Adanub.UnityMcp.PlayModeTransitions.EditEntries";
+        private const string EnteredPlayKey = "Adanub.UnityMcp.PlayModeTransitions.EnteredPlay";
+        private const string LastEventKey = "Adanub.UnityMcp.PlayModeTransitions.LastEvent";
 
         private enum State
         {
@@ -28,22 +34,22 @@ namespace Adanub.UnityMcp.Editor.Commands
         private static State s_state;
         private static string s_lastEvent;
 
-        // Every EnteredEditMode this editor session, kept in SessionState so it survives a domain
-        // reload: a play request records it, and a wait for play that sees it move knows the entry
-        // ended back in edit mode (refused by an ExitingEditMode handler, or stopped) rather than
-        // waiting out its bound.
+        // Every EnteredEditMode this editor session: a play request records it, and a wait for play
+        // that sees it move knows the entry ended back in edit mode rather than waiting out its bound.
         private static int s_editEntries;
 
         static PlayModeTransitions()
         {
             EditorApplication.playModeStateChanged -= OnChanged;
             EditorApplication.playModeStateChanged += OnChanged;
-            // A domain loaded mid-transition (a play entry's domain reload) starts from what the
-            // editor reports now.
             lock (Gate)
             {
                 s_editEntries = SessionState.GetInt(EditEntriesKey, 0);
-                s_state = EditorApplication.isPlaying ? State.Play
+                s_lastEvent = SessionState.GetString(LastEventKey, null);
+                // isPlaying already reads true in the reload a play entry makes, before
+                // EnteredPlayMode: only an entry this session heard complete counts as play.
+                var enteredPlay = SessionState.GetBool(EnteredPlayKey, false);
+                s_state = EditorApplication.isPlaying && enteredPlay ? State.Play
                     : EditorApplication.isPlayingOrWillChangePlaymode ? State.Transitioning
                     : State.Edit;
             }
@@ -64,12 +70,14 @@ namespace Adanub.UnityMcp.Editor.Commands
             lock (Gate)
             {
                 s_lastEvent = change.ToString();
+                SessionState.SetString(LastEventKey, s_lastEvent);
                 s_state = change switch
                 {
                     PlayModeStateChange.EnteredPlayMode => State.Play,
                     PlayModeStateChange.EnteredEditMode => State.Edit,
                     _ => State.Transitioning,
                 };
+                SessionState.SetBool(EnteredPlayKey, change == PlayModeStateChange.EnteredPlayMode);
                 if (change == PlayModeStateChange.EnteredEditMode)
                 {
                     s_editEntries++;
@@ -94,19 +102,19 @@ namespace Adanub.UnityMcp.Editor.Commands
                 while (true)
                 {
                     if (s_state == target)
-                        return Result(true, null);
+                        return Result(true, null, null);
                     if (play && editEntriesAtRequest is { } atRequest && s_editEntries != atRequest)
-                        return Result(false, "The play entry ended back in edit mode: refused by an ExitingEditMode handler " +
-                                             "(a pre-play validation), stopped, or blocked by compile errors. Read the console.");
+                        return Result(false, "edit", "The play entry ended back in edit mode: refused by an ExitingEditMode " +
+                                                     "handler (a pre-play validation) or stopped. Read the console.");
                     var remaining = deadline - DateTime.UtcNow;
                     if (remaining <= TimeSpan.Zero)
-                        return Result(false, $"No {(play ? "EnteredPlayMode" : "EnteredEditMode")} within {waitMs} ms.");
+                        return Result(false, null, $"No {(play ? "EnteredPlayMode" : "EnteredEditMode")} within {waitMs} ms.");
                     Monitor.Wait(Gate, remaining);
                 }
             }
         }
 
-        private static Dictionary<string, object> Result(bool settled, string note)
+        private static Dictionary<string, object> Result(bool settled, string ended, string note)
         {
             var result = new Dictionary<string, object>
             {
@@ -114,6 +122,8 @@ namespace Adanub.UnityMcp.Editor.Commands
                 { "state", s_state.ToString().ToLowerInvariant() },
                 { "lastEvent", s_lastEvent },
             };
+            if (ended is not null)
+                result["ended"] = ended;
             if (note is not null)
                 result["note"] = note;
             return result;
@@ -121,18 +131,18 @@ namespace Adanub.UnityMcp.Editor.Commands
     }
 
     /// <summary>
-    /// The long-waiting half of play-mode control. Its own type with no static state, because a
-    /// RunOnRequestThread handler's declaring type would run its static initialiser on the request
-    /// thread; the state lives in <see cref="PlayModeTransitions"/>, initialised on the main thread.
+    /// The long-waiting half of play-mode control. Its own type with no static state; the state lives
+    /// in <see cref="PlayModeTransitions"/>, initialised on the main thread before the bridge listens.
     /// </summary>
     public static class PlayModeWaitRoute
     {
         [McpRoute("editor/playmode-wait",
             "Blocks until a play-mode transition completes, woken by the editor's playModeStateChanged event (no polling). " +
             "Args: target (required) — 'play' or 'edit'; editEntries (optional, from editor/playmode's result) — with target " +
-            "'play', returns as soon as the entry ends back in edit mode instead; waitMs (0-25000, default 25000) bounds a " +
-            "transition that never completes. Returns settled, state (edit | play | transitioning), lastEvent, note. A domain " +
-            "reload during the transition drops this request; re-issue it and it answers from the reloaded editor's state.",
+            "'play', returns as soon as the entry ends back in edit mode instead (ended: 'edit'); waitMs (0-25000, default " +
+            "25000) bounds a transition that never completes. Returns settled, state (edit | play | transitioning), lastEvent, " +
+            "and ended / note when not settled. A domain reload during the transition drops this request; re-issue it and it " +
+            "answers from the reloaded editor's state.",
             RunOnRequestThread = true)]
         public static object Wait(JObject args)
         {

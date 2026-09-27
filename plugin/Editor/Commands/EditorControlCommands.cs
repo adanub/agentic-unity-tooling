@@ -33,6 +33,8 @@ namespace Adanub.UnityMcp.Editor.Commands
             switch (action)
             {
                 case "play":
+                    if (EditorUtility.scriptCompilationFailed)
+                        return new { error = "Scripts have compile errors; the editor refuses play mode until they are fixed." };
                     if (EditorApplication.isPlaying)
                         note = "Already in play mode.";
                     else
