@@ -81,7 +81,9 @@ Then restart the MCP client and focus the Unity editor so it compiles the packag
 - **Editor control**: `unity_window_show` / `unity_window_close` (a window by type name; `focus` is
   editor-tab focus only), `unity_gameview_info` (render size, selected size, VSync, target display —
   the like-for-like conditions of a measurement), `unity_editor_playmode` (play / stop / pause /
-  unpause / step), `unity_scene_open` (refused while a loaded scene has unsaved changes it would
+  unpause / step; play and stop return once the transition has completed — the server waits on the
+  `editor/playmode-wait` route, which blocks on the editor's `playModeStateChanged` event rather than
+  polling, rides out a domain reload, and reports a refused play entry at once), `unity_scene_open` (refused while a loaded scene has unsaved changes it would
   discard; never saves or discards for the user) and `unity_editor_menu_item` (a menu path; a
   dialog it opens is left for the user). All but the two reads are `mutates: true`.
 - **Compile**: `unity_compile_request` triggers `AssetDatabase.Refresh()` so the editor picks up

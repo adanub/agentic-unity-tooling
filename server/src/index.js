@@ -289,9 +289,10 @@ const TOOLS = [
   {
     name: "unity_editor_playmode",
     description:
-      "Play-mode control: play (enter), stop (exit), pause, unpause, step (one frame while paused). Entering or leaving play " +
-      "takes effect on a later editor frame and can trigger a domain reload that drops the bridge briefly — poll " +
-      "unity_editor_state afterwards.",
+      "Play-mode control: play (enter), stop (exit), pause, unpause, step (one frame while paused). play and stop return " +
+      "only once the transition has COMPLETED — the call waits on the editor's playModeStateChanged event (no polling), " +
+      "rides out a domain reload, and reports settled:false with a note when a play entry was refused (a pre-play " +
+      "validation, compile errors) or the transition did not complete within its bound.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1158,6 +1159,20 @@ async function waitForSnapshot(path, opts) {
   return { ...(last || {}), note: "The capture did not report finished within the poll budget; poll unity_memory_snapshot_status with this path." };
 }
 
+// Each wait blocks on the editor's play-mode event for up to 25 s; a domain reload drops the request and
+// callUnity re-resolves the editor, so the next wait answers from the reloaded state. This caps the total
+// (4 × 25 s) so a transition that never completes cannot hang the call.
+const PLAYMODE_MAX_WAITS = 4;
+
+async function waitForPlayMode(target, editEntries, opts) {
+  let last;
+  for (let i = 0; i < PLAYMODE_MAX_WAITS; i++) {
+    ({ result: last } = await callUnity("editor/playmode-wait", { target, editEntries, waitMs: 25000 }, opts));
+    if (last && (last.settled || last.error || last.note?.startsWith("The play entry ended"))) return last;
+  }
+  return { ...(last || {}), note: "The play-mode transition did not complete within the wait budget." };
+}
+
 // ─── CLI: emit the read-only tool permission names (for the bootstrap allowlist) ───
 // `node src/index.js --list-readonly-tools` prints every non-mutating tool as a
 // Claude Code permission string, so the install can keep .claude/settings.json in
@@ -1268,6 +1283,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { projectPath } = await callUnity("compile/request", {}, routing);
       const status = await waitForCompile({ ...routing, pinnedPath: projectPath || routing.pinnedPath }, count);
       return text(JSON.stringify(status, null, 2));
+    } catch (err) {
+      return toolFailureText(err);
+    }
+  }
+
+  // ── Play-mode control (locally orchestrated: request → wait on the editor's play-mode event) ──
+  if (name === "unity_editor_playmode") {
+    const { port: explicitPort, project, action } = args ?? {};
+    try {
+      const routing = await resolveRouting(explicitPort, project);
+      const { result: requested, projectPath } = await callUnity("editor/playmode", { action }, routing);
+      const target = action === "play" ? "play" : action === "stop" ? "edit" : null;
+      if (!target || requested?.error || requested?.note) return text(JSON.stringify(requested, null, 2));
+      const settled = await waitForPlayMode(target, target === "play" ? requested.editEntries : undefined, {
+        ...routing,
+        pinnedPath: projectPath || routing.pinnedPath,
+      });
+      return text(JSON.stringify({ action, ...settled }, null, 2));
     } catch (err) {
       return toolFailureText(err);
     }

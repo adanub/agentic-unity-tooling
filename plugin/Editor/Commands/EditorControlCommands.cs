@@ -18,8 +18,9 @@ namespace Adanub.UnityMcp.Editor.Commands
     {
         [McpRoute("editor/playmode",
             "Play-mode control. Args: action (required) — 'play' (enter play mode), 'stop' (exit), 'pause', 'unpause', 'step' " +
-            "(advance one frame while paused). Entering or leaving play takes effect on a later editor frame, and can trigger " +
-            "a domain reload that drops the bridge briefly — poll editor/state afterwards.")]
+            "(advance one frame while paused). Entering or leaving play takes effect on a later editor frame: wait for it with " +
+            "editor/playmode-wait, passing this result's editEntries, which blocks until the editor's play-mode event says " +
+            "the transition completed.")]
         public static object PlayMode(JObject args)
         {
             string action = args.Value<string>("action")?.ToLowerInvariant();
@@ -68,6 +69,7 @@ namespace Adanub.UnityMcp.Editor.Commands
                 { "isPlaying", EditorApplication.isPlaying },
                 { "isPaused", EditorApplication.isPaused },
                 { "isPlayingOrWillChangePlaymode", EditorApplication.isPlayingOrWillChangePlaymode },
+                { "editEntries", PlayModeTransitions.EditEntries },
             };
             if (note is not null)
                 result["note"] = note;
