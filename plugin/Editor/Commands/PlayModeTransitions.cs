@@ -34,8 +34,10 @@ namespace Adanub.UnityMcp.Editor.Commands
         private static State s_state;
         private static string s_lastEvent;
 
-        // Every EnteredEditMode this editor session: a play request records it, and a wait for play
-        // that sees it move knows the entry ended back in edit mode rather than waiting out its bound.
+        // Every return to edit mode this editor session — each EnteredEditMode, and each cancelled
+        // play entry, which delivers no EnteredEditMode (below): a play request records it, and a
+        // wait for play that sees it move knows the entry ended back in edit mode rather than
+        // waiting out its bound.
         private static int s_editEntries;
 
         static PlayModeTransitions()
@@ -55,7 +57,7 @@ namespace Adanub.UnityMcp.Editor.Commands
             }
         }
 
-        /// <summary>The EnteredEditMode count, recorded by a play request for <see cref="WaitFor"/>.</summary>
+        /// <summary>The count of returns to edit mode, recorded by a play request for <see cref="WaitFor"/>.</summary>
         internal static int EditEntries
         {
             get
@@ -65,20 +67,26 @@ namespace Adanub.UnityMcp.Editor.Commands
             }
         }
 
+        // A play entry cancelled from an ExitingEditMode handler (EditorApplication.isPlaying set
+        // back to false — how a pre-play validation refuses) delivers ExitingEditMode, then
+        // ExitingPlayMode with isPlaying already false, and neither Entered event: that
+        // ExitingPlayMode is the return to edit mode. A real exit's ExitingPlayMode reads isPlaying true.
         private static void OnChanged(PlayModeStateChange change)
         {
             lock (Gate)
             {
                 s_lastEvent = change.ToString();
                 SessionState.SetString(LastEventKey, s_lastEvent);
+                var entryCancelled = change == PlayModeStateChange.ExitingPlayMode && !EditorApplication.isPlaying;
                 s_state = change switch
                 {
                     PlayModeStateChange.EnteredPlayMode => State.Play,
                     PlayModeStateChange.EnteredEditMode => State.Edit,
+                    _ when entryCancelled => State.Edit,
                     _ => State.Transitioning,
                 };
                 SessionState.SetBool(EnteredPlayKey, change == PlayModeStateChange.EnteredPlayMode);
-                if (change == PlayModeStateChange.EnteredEditMode)
+                if (change == PlayModeStateChange.EnteredEditMode || entryCancelled)
                 {
                     s_editEntries++;
                     SessionState.SetInt(EditEntriesKey, s_editEntries);
@@ -89,8 +97,9 @@ namespace Adanub.UnityMcp.Editor.Commands
 
         /// <summary>
         /// Blocks until the editor is settled in play mode (<paramref name="play"/>) or edit mode,
-        /// or — waiting for play with <paramref name="editEntriesAtRequest"/> given — until an
-        /// EnteredEditMode after that request says the entry did not happen; <paramref name="waitMs"/>
+        /// or — waiting for play with <paramref name="editEntriesAtRequest"/> given — until a return
+        /// to edit mode after that request (an EnteredEditMode, or a cancelled entry) says the entry
+        /// did not happen; <paramref name="waitMs"/>
         /// bounds a transition that never completes. Call from a request thread only: it blocks.
         /// </summary>
         internal static Dictionary<string, object> WaitFor(bool play, int? editEntriesAtRequest, int waitMs)

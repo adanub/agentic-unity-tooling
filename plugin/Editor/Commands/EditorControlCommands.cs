@@ -29,6 +29,10 @@ namespace Adanub.UnityMcp.Editor.Commands
             if (EditorApplication.isCompiling)
                 return new { error = "The editor is compiling; play-mode changes are refused until it finishes." };
 
+            // Read before the call: EnterPlaymode delivers ExitingEditMode synchronously, so an
+            // ExitingEditMode handler that cancels the entry has already returned the editor to edit
+            // mode — and counted it — by the time EnterPlaymode returns.
+            var editEntriesAtRequest = PlayModeTransitions.EditEntries;
             string note = null;
             switch (action)
             {
@@ -71,7 +75,7 @@ namespace Adanub.UnityMcp.Editor.Commands
                 { "isPlaying", EditorApplication.isPlaying },
                 { "isPaused", EditorApplication.isPaused },
                 { "isPlayingOrWillChangePlaymode", EditorApplication.isPlayingOrWillChangePlaymode },
-                { "editEntries", PlayModeTransitions.EditEntries },
+                { "editEntries", editEntriesAtRequest },
             };
             if (note is not null)
                 result["note"] = note;
